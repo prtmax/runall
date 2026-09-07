@@ -1,0 +1,118 @@
+name: Cosmos Android build
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_spec_id:
+        description: Immutable Cosmos build spec id
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BUILD_SPEC_ID: ${{ inputs.build_spec_id }}
+      COSMOS_BUILD_SPEC_URL: ${{ secrets.COSMOS_BUILD_SPEC_URL }}
+      COSMOS_BUILD_CALLBACK_URL: ${{ secrets.COSMOS_BUILD_CALLBACK_URL }}
+      COSMOS_SERVICE_TOKEN: ${{ secrets.COSMOS_SERVICE_TOKEN }}
+      COSMOS_BUILD_REPOSITORY_TOKEN: ${{ secrets.COSMOS_BUILD_REPOSITORY_TOKEN }}
+    steps:
+      - name: Validate executor configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$BUILD_SPEC_ID"
+          test -n "$COSMOS_BUILD_SPEC_URL"
+          test -n "$COSMOS_BUILD_CALLBACK_URL"
+          test -n "$COSMOS_SERVICE_TOKEN"
+
+      - name: Fetch immutable Build Spec
+        id: spec
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --retry 3 \
+            -H "Authorization: Bearer ${COSMOS_SERVICE_TOKEN}" \
+            -H 'Accept: application/json' \
+            "${COSMOS_BUILD_SPEC_URL%/}/${BUILD_SPEC_ID}" > build-spec.json
+          jq -e --arg id "$BUILD_SPEC_ID" '.id == $id and (.specHash | startswith("sha256:"))' build-spec.json >/dev/null
+          jq -r '.repository' build-spec.json | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+          echo "repository=$(jq -r .repository build-spec.json)" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$(jq -r .commitSha build-spec.json)" >> "$GITHUB_OUTPUT"
+          echo "targets=$(jq -c '.targets // ["apk"]' build-spec.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout application source
+        shell: bash
+        env:
+          REPOSITORY: ${{ steps.spec.outputs.repository }}
+          COMMIT_SHA: ${{ steps.spec.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "${COSMOS_BUILD_REPOSITORY_TOKEN:-}" ]; then
+            git clone "https://x-access-token:${COSMOS_BUILD_REPOSITORY_TOKEN}@github.com/${REPOSITORY}.git" app
+          else
+            git clone "https://github.com/${REPOSITORY}.git" app
+          fi
+          git -C app fetch --depth=1 origin "$COMMIT_SHA"
+          git -C app checkout --detach "$COMMIT_SHA"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build requested Android artifacts
+        shell: bash
+        env:
+          TARGETS: ${{ steps.spec.outputs.targets }}
+        run: |
+          set -euo pipefail
+          cd app
+          chmod +x ./gradlew
+          if jq -e 'index("apk") != null' <<<"$TARGETS" >/dev/null; then
+            ./gradlew --no-daemon assembleRelease
+          fi
+          if jq -e 'index("aab") != null' <<<"$TARGETS" >/dev/null; then
+            ./gradlew --no-daemon bundleRelease
+          fi
+
+      - name: Publish manifest and success
+        if: success()
+        shell: bash
+        env:
+          BUILD_ID: ${{ env.BUILD_SPEC_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p manifest
+          find app -type f \( -name '*.apk' -o -name '*.aab' \) -print0 | while IFS= read -r -d '' file; do
+            sha=$(sha256sum "$file" | awk '{print $1}')
+            size=$(stat -c '%s' "$file")
+            jq -n --arg file "$file" --arg sha "$sha" --argjson size "$size" \
+              '{path:$file,sha256:$sha,byteSize:$size}' >> manifest/items.ndjson
+          done
+          jq -s --arg buildId "$BUILD_ID" '{schemaVersion:1,buildId:$buildId,artifacts:.}' manifest/items.ndjson > manifest.json
+          curl --fail-with-body --retry 3 -X POST \
+            -H "Authorization: Bearer ${COSMOS_SERVICE_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            --data-binary @manifest.json \
+            "${COSMOS_BUILD_CALLBACK_URL%/}/${BUILD_ID}/events"
+
+      - name: Report failure
+        if: failure()
+        shell: bash
+        env:
+          BUILD_ID: ${{ env.BUILD_SPEC_ID }}
+        run: |
+          set -euo pipefail
+          jq -n --arg buildId "$BUILD_ID" '{buildId:$buildId,status:"failed",errorMessage:"runall workflow failed"}' |
+            curl --fail-with-body --retry 3 -X POST \
+              -H "Authorization: Bearer ${COSMOS_SERVICE_TOKEN}" \
+              -H 'Content-Type: application/json' \
+              --data-binary @- \
+              "${COSMOS_BUILD_CALLBACK_URL%/}/${BUILD_ID}/events"
