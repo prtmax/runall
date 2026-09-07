@@ -44,7 +44,6 @@ jobs:
           jq -r '.repository' build-spec.json | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
           echo "repository=$(jq -r .repository build-spec.json)" >> "$GITHUB_OUTPUT"
           echo "commit_sha=$(jq -r .commitSha build-spec.json)" >> "$GITHUB_OUTPUT"
-          echo "build_id=$(jq -r .buildId build-spec.json)" >> "$GITHUB_OUTPUT"
           echo "targets=$(jq -c '.targets // ["apk"]' build-spec.json)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout application source
@@ -87,7 +86,7 @@ jobs:
         if: success()
         shell: bash
         env:
-          BUILD_ID: ${{ steps.spec.outputs.build_id }}
+          BUILD_ID: ${{ env.BUILD_SPEC_ID }}
         run: |
           set -euo pipefail
           mkdir -p manifest
@@ -108,7 +107,7 @@ jobs:
         if: failure()
         shell: bash
         env:
-          BUILD_ID: ${{ steps.spec.outputs.build_id }}
+          BUILD_ID: ${{ env.BUILD_SPEC_ID }}
         run: |
           set -euo pipefail
           jq -n --arg buildId "$BUILD_ID" '{buildId:$buildId,status:"failed",errorMessage:"runall workflow failed"}' |
