@@ -1,4 +1,4 @@
-name: Cosmos Android build
+name: Cosmos app build
 
 on:
   workflow_dispatch:
@@ -12,15 +12,19 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
+    outputs:
+      repository: ${{ steps.spec.outputs.repository }}
+      source_commit: ${{ steps.spec.outputs.source_commit }}
+      platform: ${{ steps.spec.outputs.platform }}
+      targets: ${{ steps.spec.outputs.targets }}
     env:
       BUILD_SPEC_ID: ${{ inputs.build_spec_id }}
       COSMOS_BUILD_SPEC_URL: ${{ secrets.COSMOS_BUILD_SPEC_URL }}
       COSMOS_BUILD_CALLBACK_URL: ${{ secrets.COSMOS_BUILD_CALLBACK_URL }}
       COSMOS_SERVICE_TOKEN: ${{ secrets.COSMOS_SERVICE_TOKEN }}
-      COSMOS_BUILD_REPOSITORY_TOKEN: ${{ secrets.COSMOS_BUILD_REPOSITORY_TOKEN }}
     steps:
       - name: Validate executor configuration
         shell: bash
@@ -42,15 +46,62 @@ jobs:
             "${COSMOS_BUILD_SPEC_URL%/}/${BUILD_SPEC_ID}" > build-spec.json
           jq -e --arg id "$BUILD_SPEC_ID" '.id == $id and (.specHash | startswith("sha256:"))' build-spec.json >/dev/null
           jq -r '.repository' build-spec.json | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+          jq -r '.sourceCommit' build-spec.json | grep -Eq '^[0-9a-f]{40}$'
+          jq -r '.platform' build-spec.json | grep -Eq '^(android|ios)$'
+          jq -e 'if .platform == "android" then ((.targets | length) > 0 and all(.targets[]; . == "apk" or . == "aab")) else (.targets == ["ipa"]) end' build-spec.json >/dev/null
           echo "repository=$(jq -r .repository build-spec.json)" >> "$GITHUB_OUTPUT"
-          echo "commit_sha=$(jq -r .commitSha build-spec.json)" >> "$GITHUB_OUTPUT"
-          echo "targets=$(jq -c '.targets // ["apk"]' build-spec.json)" >> "$GITHUB_OUTPUT"
+          echo "source_commit=$(jq -r .sourceCommit build-spec.json)" >> "$GITHUB_OUTPUT"
+          echo "platform=$(jq -r .platform build-spec.json)" >> "$GITHUB_OUTPUT"
+          echo "targets=$(jq -c .targets build-spec.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Report running
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg status running \
+            --arg externalRunId "$GITHUB_RUN_ID" \
+            --arg externalRunUrl "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{status:$status,externalRunId:$externalRunId,externalRunUrl:$externalRunUrl}' |
+            curl --fail-with-body --retry 3 -X POST \
+              -H "Authorization: Bearer ${COSMOS_SERVICE_TOKEN}" \
+              -H 'Content-Type: application/json' \
+              --data-binary @- \
+              "${COSMOS_BUILD_CALLBACK_URL%/}/${BUILD_SPEC_ID}/events"
+
+      - name: Report failure
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -n --arg status failed \
+            --arg externalRunId "$GITHUB_RUN_ID" \
+            --arg externalRunUrl "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --arg errorMessage "runall preflight failed" \
+            '{status:$status,externalRunId:$externalRunId,externalRunUrl:$externalRunUrl,errorMessage:$errorMessage}' |
+            curl --fail-with-body --retry 3 -X POST \
+              -H "Authorization: Bearer ${COSMOS_SERVICE_TOKEN}" \
+              -H 'Content-Type: application/json' \
+              --data-binary @- \
+              "${COSMOS_BUILD_CALLBACK_URL%/}/${BUILD_SPEC_ID}/events"
+
+  android:
+    needs: prepare
+    if: needs.prepare.outputs.platform == 'android'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BUILD_SPEC_ID: ${{ inputs.build_spec_id }}
+      COSMOS_BUILD_CALLBACK_URL: ${{ secrets.COSMOS_BUILD_CALLBACK_URL }}
+      COSMOS_SERVICE_TOKEN: ${{ secrets.COSMOS_SERVICE_TOKEN }}
+      COSMOS_BUILD_REPOSITORY_TOKEN: ${{ secrets.COSMOS_BUILD_REPOSITORY_TOKEN }}
+      REPOSITORY: ${{ needs.prepare.outputs.repository }}
+      SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
+      TARGETS: ${{ needs.prepare.outputs.targets }}
+    steps:
 
       - name: Checkout application source
         shell: bash
-        env:
-          REPOSITORY: ${{ steps.spec.outputs.repository }}
-          COMMIT_SHA: ${{ steps.spec.outputs.commit_sha }}
         run: |
           set -euo pipefail
           if [ -n "${COSMOS_BUILD_REPOSITORY_TOKEN:-}" ]; then
@@ -58,8 +109,8 @@ jobs:
           else
             git clone "https://github.com/${REPOSITORY}.git" app
           fi
-          git -C app fetch --depth=1 origin "$COMMIT_SHA"
-          git -C app checkout --detach "$COMMIT_SHA"
+          git -C app fetch --depth=1 origin "$SOURCE_COMMIT"
+          git -C app checkout --detach "$SOURCE_COMMIT"
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -69,8 +120,6 @@ jobs:
 
       - name: Build requested Android artifacts
         shell: bash
-        env:
-          TARGETS: ${{ steps.spec.outputs.targets }}
         run: |
           set -euo pipefail
           cd app
@@ -82,37 +131,154 @@ jobs:
             ./gradlew --no-daemon bundleRelease
           fi
 
-      - name: Publish manifest and success
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cosmos-${{ env.BUILD_SPEC_ID }}-android
+          path: |
+            app/**/*.apk
+            app/**/*.aab
+          if-no-files-found: error
+
+      - name: Report success
         if: success()
         shell: bash
-        env:
-          BUILD_ID: ${{ env.BUILD_SPEC_ID }}
         run: |
           set -euo pipefail
-          mkdir -p manifest
-          find app -type f \( -name '*.apk' -o -name '*.aab' \) -print0 | while IFS= read -r -d '' file; do
-            sha=$(sha256sum "$file" | awk '{print $1}')
-            size=$(stat -c '%s' "$file")
-            jq -n --arg file "$file" --arg sha "$sha" --argjson size "$size" \
-              '{path:$file,sha256:$sha,byteSize:$size}' >> manifest/items.ndjson
-          done
-          jq -s --arg buildId "$BUILD_ID" '{schemaVersion:1,buildId:$buildId,artifacts:.}' manifest/items.ndjson > manifest.json
-          curl --fail-with-body --retry 3 -X POST \
-            -H "Authorization: Bearer ${COSMOS_SERVICE_TOKEN}" \
-            -H 'Content-Type: application/json' \
-            --data-binary @manifest.json \
-            "${COSMOS_BUILD_CALLBACK_URL%/}/${BUILD_ID}/events"
-
-      - name: Report failure
-        if: failure()
-        shell: bash
-        env:
-          BUILD_ID: ${{ env.BUILD_SPEC_ID }}
-        run: |
-          set -euo pipefail
-          jq -n --arg buildId "$BUILD_ID" '{buildId:$buildId,status:"failed",errorMessage:"runall workflow failed"}' |
+          jq -n --arg status succeeded \
+            --arg externalRunId "$GITHUB_RUN_ID" \
+            --arg externalRunUrl "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{status:$status,externalRunId:$externalRunId,externalRunUrl:$externalRunUrl}' |
             curl --fail-with-body --retry 3 -X POST \
               -H "Authorization: Bearer ${COSMOS_SERVICE_TOKEN}" \
               -H 'Content-Type: application/json' \
               --data-binary @- \
-              "${COSMOS_BUILD_CALLBACK_URL%/}/${BUILD_ID}/events"
+              "${COSMOS_BUILD_CALLBACK_URL%/}/${BUILD_SPEC_ID}/events"
+
+      - name: Report failure
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -n --arg status failed \
+            --arg externalRunId "$GITHUB_RUN_ID" \
+            --arg externalRunUrl "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --arg errorMessage "runall Android build failed" \
+            '{status:$status,externalRunId:$externalRunId,externalRunUrl:$externalRunUrl,errorMessage:$errorMessage}' |
+            curl --fail-with-body --retry 3 -X POST \
+              -H "Authorization: Bearer ${COSMOS_SERVICE_TOKEN}" \
+              -H 'Content-Type: application/json' \
+              --data-binary @- \
+              "${COSMOS_BUILD_CALLBACK_URL%/}/${BUILD_SPEC_ID}/events"
+
+  ios:
+    needs: prepare
+    if: needs.prepare.outputs.platform == 'ios'
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      BUILD_SPEC_ID: ${{ inputs.build_spec_id }}
+      COSMOS_BUILD_CALLBACK_URL: ${{ secrets.COSMOS_BUILD_CALLBACK_URL }}
+      COSMOS_SERVICE_TOKEN: ${{ secrets.COSMOS_SERVICE_TOKEN }}
+      COSMOS_BUILD_REPOSITORY_TOKEN: ${{ secrets.COSMOS_BUILD_REPOSITORY_TOKEN }}
+      IOS_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}
+      IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+      IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+      IOS_EXPORT_OPTIONS_PLIST_BASE64: ${{ secrets.IOS_EXPORT_OPTIONS_PLIST_BASE64 }}
+      IOS_KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
+      REPOSITORY: ${{ needs.prepare.outputs.repository }}
+      SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
+    steps:
+      - name: Validate iOS signing configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$IOS_CERTIFICATE_P12_BASE64"
+          test -n "$IOS_CERTIFICATE_PASSWORD"
+          test -n "$IOS_PROVISIONING_PROFILE_BASE64"
+          test -n "$IOS_EXPORT_OPTIONS_PLIST_BASE64"
+          test -n "$IOS_KEYCHAIN_PASSWORD"
+
+      - name: Checkout application source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${COSMOS_BUILD_REPOSITORY_TOKEN:-}" ]; then
+            git clone "https://x-access-token:${COSMOS_BUILD_REPOSITORY_TOKEN}@github.com/${REPOSITORY}.git" app
+          else
+            git clone "https://github.com/${REPOSITORY}.git" app
+          fi
+          git -C app fetch --depth=1 origin "$SOURCE_COMMIT"
+          git -C app checkout --detach "$SOURCE_COMMIT"
+
+      - name: Install Apple signing material
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          security create-keychain -p "$IOS_KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+          security unlock-keychain -p "$IOS_KEYCHAIN_PASSWORD" build.keychain
+          python3 - <<'PY'
+          import base64, os, pathlib
+          pathlib.Path("certificate.p12").write_bytes(base64.b64decode(os.environ["IOS_CERTIFICATE_P12_BASE64"]))
+          pathlib.Path(os.path.expanduser("~/Library/MobileDevice/Provisioning Profiles/cosmos.mobileprovision")).write_bytes(base64.b64decode(os.environ["IOS_PROVISIONING_PROFILE_BASE64"]))
+          pathlib.Path("ExportOptions.plist").write_bytes(base64.b64decode(os.environ["IOS_EXPORT_OPTIONS_PLIST_BASE64"]))
+          PY
+          security import certificate.p12 -k build.keychain -P "$IOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security list-keychains -d user -s build.keychain login.keychain
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$IOS_KEYCHAIN_PASSWORD" build.keychain
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Build IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f app/pubspec.yaml
+          test -d app/ios
+          cd app
+          flutter pub get
+          flutter build ipa --release --export-options-plist ../ExportOptions.plist
+
+      - name: Upload iOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cosmos-${{ env.BUILD_SPEC_ID }}-ios
+          path: app/build/ios/ipa/*.ipa
+          if-no-files-found: error
+
+      - name: Report success
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -n --arg status succeeded \
+            --arg externalRunId "$GITHUB_RUN_ID" \
+            --arg externalRunUrl "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{status:$status,externalRunId:$externalRunId,externalRunUrl:$externalRunUrl}' |
+            curl --fail-with-body --retry 3 -X POST \
+              -H "Authorization: Bearer ${COSMOS_SERVICE_TOKEN}" \
+              -H 'Content-Type: application/json' \
+              --data-binary @- \
+              "${COSMOS_BUILD_CALLBACK_URL%/}/${BUILD_SPEC_ID}/events"
+
+      - name: Report failure
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -n --arg status failed \
+            --arg externalRunId "$GITHUB_RUN_ID" \
+            --arg externalRunUrl "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --arg errorMessage "runall iOS IPA build failed" \
+            '{status:$status,externalRunId:$externalRunId,externalRunUrl:$externalRunUrl,errorMessage:$errorMessage}' |
+            curl --fail-with-body --retry 3 -X POST \
+              -H "Authorization: Bearer ${COSMOS_SERVICE_TOKEN}" \
+              -H 'Content-Type: application/json' \
+              --data-binary @- \
+              "${COSMOS_BUILD_CALLBACK_URL%/}/${BUILD_SPEC_ID}/events"
