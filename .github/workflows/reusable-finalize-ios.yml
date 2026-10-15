@@ -1,0 +1,91 @@
+name: Cosmos build finalize-ios
+
+on:
+  workflow_call:
+    inputs:
+      build_run_id:
+        required: true
+        type: string
+      upstream_result:
+        required: true
+        type: string
+    secrets:
+      COSMOS_BUILD_AUTH_EXCHANGE_URL:
+        required: true
+      COSMOS_BUILD_CALLBACK_URL:
+        required: true
+      COSMOS_BUILD_ARTIFACT_UPLOAD_URL:
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  finalize-ios:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BUILD_RUN_ID: ${{ inputs.build_run_id }}
+      COSMOS_BUILD_ARTIFACT_UPLOAD_URL: ${{ secrets.COSMOS_BUILD_ARTIFACT_UPLOAD_URL }}
+      COSMOS_BUILD_CALLBACK_URL: ${{ secrets.COSMOS_BUILD_CALLBACK_URL }}
+      COSMOS_BUILD_AUTH_EXCHANGE_URL: ${{ secrets.COSMOS_BUILD_AUTH_EXCHANGE_URL }}
+    steps:
+      - name: Checkout runall
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Download build spec
+        if: inputs.upstream_result == 'success'
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
+        with:
+          name: build-spec-${{ inputs.build_run_id }}
+          path: spec
+
+      - name: Download signed IPA
+        if: inputs.upstream_result == 'success'
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
+        with:
+          name: signed-${{ inputs.build_run_id }}
+          path: signed
+
+      - name: Exchange OIDC for finalize credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/exchange-build-credential --run-id "$BUILD_RUN_ID" --output-env "$GITHUB_ENV"
+
+      - name: Upload IPA
+        if: inputs.upstream_result == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f spec/build-spec.json ]]; then
+            spec="spec/build-spec.json"
+          elif [[ -f spec/build-spec/build-spec.json ]]; then
+            spec="spec/build-spec/build-spec.json"
+          else
+            spec="$(find spec -name build-spec.json -print -quit)"
+          fi
+          test -n "$spec" && test -f "$spec"
+          shopt -s nullglob
+          uploaded=0
+          for ipa in signed/*.ipa; do
+            ./scripts/upload-artifacts --spec "$spec" --artifact "$ipa" --target ipa
+            uploaded=1
+          done
+          if [[ "$uploaded" -eq 0 ]]; then
+            echo "no ipa to upload"
+            exit 1
+          fi
+
+      - name: Report succeeded
+        if: inputs.upstream_result == 'success'
+        shell: bash
+        run: ./scripts/report-result --status succeeded --phase finalize --run-id "$BUILD_RUN_ID"
+
+      - name: Report failed
+        if: inputs.upstream_result != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/report-result --status failed --phase finalize --run-id "$BUILD_RUN_ID" --error-message "runall ios finalize skipped or upstream failed" || true

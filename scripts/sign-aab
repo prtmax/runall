@@ -117,4 +117,6 @@ if [[ -n "$EXPECTED_FINGERPRINT" ]]; then
   fi
 fi
 
+package_name="$(json_get "$SPEC" '.config.android.applicationId // .config.app.applicationId // .config.applicationId // empty')"
+report_sign_result aab "$package_name" "$expected_version_name" "$expected_version_code" "$EXPECTED_FINGERPRINT" "$OUTPUT"
 log "signed aab written to $OUTPUT"

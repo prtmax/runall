@@ -128,3 +128,48 @@ validate_build_spec_document() {
   verify_spec_hash_field "$spec_file"
   verify_declared_resource_digests "$spec_file"
 }
+
+normalize_sha256() {
+  local raw="${1#sha256:}"
+  raw="${raw//:/}"
+  raw="${raw// /}"
+  raw="${raw,,}"
+  if [[ ! "$raw" =~ ^[0-9a-f]{64}$ ]]; then
+    log "value is not a SHA-256 digest"
+    exit 1
+  fi
+  printf '%s' "$raw"
+}
+
+# Record the signed file with the sign-stage credential. Finalize upload is
+# authorized only when this exact size and digest were stored.
+report_sign_result() {
+  local target="$1" package_name="$2" version_name="$3" version_code="$4" cert="$5" artifact="$6"
+  assert_non_empty "sign package" "$package_name"
+  assert_non_empty "sign versionName" "$version_name"
+  assert_non_empty "sign versionCode" "$version_code"
+  assert_non_empty "sign certificate" "$cert"
+  assert_non_empty "COSMOS_BUILD_CALLBACK_URL" "${COSMOS_BUILD_CALLBACK_URL:-}"
+  assert_non_empty "COSMOS_BUILD_CREDENTIAL" "${COSMOS_BUILD_CREDENTIAL:-}"
+  assert_non_empty "BUILD_RUN_ID" "${BUILD_RUN_ID:-}"
+  [[ -f "$artifact" ]] || { log "signed artifact missing"; exit 1; }
+  local cert_hex size digest
+  cert_hex="$(normalize_sha256 "$cert")"
+  size="$(wc -c <"$artifact" | tr -d ' ')"
+  digest="$(sha256_file "$artifact")"
+  require_cmd curl
+  require_cmd jq
+  curl --fail-with-body -sS -X POST \
+    -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
+    -H 'Content-Type: application/json' \
+    --data-binary "$(jq -n \
+      --arg target "$target" \
+      --arg packageName "$package_name" \
+      --arg versionName "$version_name" \
+      --argjson versionCode "$version_code" \
+      --arg certSha256 "$cert_hex" \
+      --argjson byteSize "$size" \
+      --arg sha256 "$digest" \
+      '{target: $target, packageName: $packageName, versionName: $versionName, versionCode: $versionCode, certSha256: $certSha256, byteSize: $byteSize, sha256: $sha256}')" \
+    "${COSMOS_BUILD_CALLBACK_URL%/}/build-runs/${BUILD_RUN_ID}/sign-results" >/dev/null
+}

@@ -1,0 +1,83 @@
+name: Cosmos build sign-ios
+
+on:
+  workflow_call:
+    inputs:
+      build_run_id:
+        required: true
+        type: string
+    secrets:
+      COSMOS_BUILD_AUTH_EXCHANGE_URL:
+        required: true
+      COSMOS_BUILD_CALLBACK_URL:
+        required: true
+      COSMOS_BUILD_SIGN_MATERIAL_URL:
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  sign-ios:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      BUILD_RUN_ID: ${{ inputs.build_run_id }}
+      COSMOS_BUILD_SIGN_MATERIAL_URL: ${{ secrets.COSMOS_BUILD_SIGN_MATERIAL_URL }}
+      COSMOS_BUILD_CALLBACK_URL: ${{ secrets.COSMOS_BUILD_CALLBACK_URL }}
+      COSMOS_BUILD_AUTH_EXCHANGE_URL: ${{ secrets.COSMOS_BUILD_AUTH_EXCHANGE_URL }}
+    steps:
+      - name: Checkout runall
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Download build spec
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
+        with:
+          name: build-spec-${{ inputs.build_run_id }}
+          path: spec
+
+      - name: Download unsigned app
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
+        with:
+          name: unsigned-${{ inputs.build_run_id }}
+          path: unsigned
+
+      - name: Exchange OIDC for sign credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/exchange-build-credential --run-id "$BUILD_RUN_ID" --output-env "$GITHUB_ENV"
+
+      - name: Report sign phase
+        shell: bash
+        run: ./scripts/report-result --status running --phase sign --run-id "$BUILD_RUN_ID"
+
+      - name: Sign iOS app
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f spec/build-spec.json ]]; then
+            spec="spec/build-spec.json"
+          elif [[ -f spec/build-spec/build-spec.json ]]; then
+            spec="spec/build-spec/build-spec.json"
+          else
+            spec="$(find spec -name build-spec.json -print -quit)"
+          fi
+          test -n "$spec" && test -f "$spec"
+          app="$(find unsigned -name '*.app' -type d -print -quit)"
+          test -n "$app" && test -d "$app"
+          mkdir -p signed
+          ./scripts/sign-ios --spec "$spec" --input "$app" --output "signed/$(basename "$app" .app).ipa"
+
+      - name: Upload signed IPA
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signed-${{ inputs.build_run_id }}
+          path: signed/
+          if-no-files-found: error
+
+      - name: Report sign failure
+        if: failure()
+        shell: bash
+        run: ./scripts/report-result --status failed --phase sign --run-id "$BUILD_RUN_ID" --error-message "runall ios sign failed" || true

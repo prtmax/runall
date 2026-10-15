@@ -8,7 +8,7 @@ source "${ROOT_DIR}/scripts/lib/common.sh"
 
 usage() {
   cat <<'EOF'
-Usage: upload-artifacts --spec <path> --artifact <file> --target <apk|aab> [options]
+Usage: upload-artifacts --spec <path> --artifact <file> --target <apk|aab|ipa> [options]
 
 Options:
   --file-name   Object file name (default: basename of artifact)
@@ -47,7 +47,7 @@ assert_non_empty "--target" "$TARGET"
 validate_build_spec_document "$SPEC"
 
 case "$TARGET" in
-  apk|aab) ;;
+  apk|aab|ipa) ;;
   *) log "unsupported target: $TARGET"; exit 1 ;;
 esac
 
@@ -63,8 +63,7 @@ if [[ -z "$FILE_NAME" ]]; then
 fi
 
 size="$(wc -c <"$ARTIFACT" | tr -d ' ')"
-digest="$(sha256_file "$ARTIFACT")"
-sha256="sha256:${digest}"
+sha256="$(sha256_file "$ARTIFACT")"
 
 if [[ -z "$CONTENT_TYPE" ]]; then
   if [[ "$TARGET" == "apk" ]]; then
@@ -89,10 +88,10 @@ response="$(curl --fail-with-body -sS -X POST \
     '{target: $target, fileName: $fileName, contentType: $contentType, size: $size, sha256: $sha256}')" \
   "$url")"
 
-put_url="$(echo "$response" | jq -r '.uploadUrl // .presignedUrl // empty')"
+put_url="$(echo "$response" | jq -r '.url // .uploadUrl // .presignedUrl // empty')"
 assert_non_empty "uploadUrl" "$put_url"
 
-headers_json="$(echo "$response" | jq -c '.uploadHeaders // {}')"
+headers_json="$(echo "$response" | jq -c '.headers // .uploadHeaders // {}')"
 curl_args=(-sS -X PUT --data-binary "@${ARTIFACT}")
 while IFS= read -r line; do
   [[ -z "$line" ]] && continue

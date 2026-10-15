@@ -146,4 +146,5 @@ if [[ -n "$EXPECTED_FINGERPRINT" ]]; then
   fi
 fi
 
+report_sign_result apk "$EXPECTED_PACKAGE" "$expected_version_name" "$expected_version_code" "$EXPECTED_FINGERPRINT" "$OUTPUT"
 log "signed apk written to $OUTPUT"

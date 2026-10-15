@@ -34,9 +34,12 @@ platform receives a failed callback.
 | `build-android` | Flutter release APK/AAB from the prepared workspace, unsigned | None |
 | `sign-android` | APK zipalign/apksigner or AAB jarsigner, version and certificate checks | Sign material only |
 | `finalize-android` | Presigned upload + terminal callback, including upstream failure | Upload + finalize scope |
+| `build-ios` | Unsigned `flutter build ios --release --no-codesign` | None |
+| `sign-ios` | Certificate, profile, team, and bundle checks, then IPA packaging | Sign material only |
+| `finalize-ios` | Presigned IPA upload + terminal callback, including upstream failure | Upload + finalize scope |
 
-iOS IPA support will follow the same pattern in a later change; phase A focuses on
-Android scripts and workflow structure.
+Real keystore, Apple certificate, object storage, and device install checks stay outside
+this repository. Missing material or tools fail the job; they do not produce a debug package.
 
 ## Scripts
 
@@ -48,7 +51,9 @@ Android scripts and workflow structure.
 | `scripts/build-android` | Unsigned Flutter APK/AAB from an existing checkout |
 | `scripts/sign-android` | Sign APK, verify package, version, and cert fingerprint |
 | `scripts/sign-aab` | Sign AAB with jarsigner, verify version and cert fingerprint |
-| `scripts/upload-artifacts` | Request presigned PUT and upload |
+| `scripts/build-ios` | Unsigned iOS Runner.app from an existing checkout |
+| `scripts/sign-ios` | Sign Runner.app, package IPA, record the sign result |
+| `scripts/upload-artifacts` | Request presigned PUT and upload APK, AAB, or IPA |
 | `scripts/report-result` | Attempt progress / terminal status callback |
 
 Local contract tests (no network):
