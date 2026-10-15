@@ -202,6 +202,8 @@ if grep -q 'COSMOS_BUILD_CREDENTIAL: ${{ env.COSMOS_BUILD_CREDENTIAL }}' "$final
   exit 1
 fi
 grep -q 'scripts/sign-aab' "${ROOT_DIR}/.github/workflows/reusable-sign-android.yml"
+grep -q 'source-workspace.tar' "${ROOT_DIR}/.github/workflows/reusable-prepare.yml"
+grep -q 'source-workspace.tar' "${ROOT_DIR}/.github/workflows/android-build.yml"
 grep -q -- '--target aab' "$finalize"
 
 log "contract: checkout-source does not persist the clone token"

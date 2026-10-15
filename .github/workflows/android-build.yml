@@ -17,7 +17,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-prepare.yml@71760a416d9b5161ae0a1aef8359a0af68b36a07
+    uses: prtmax/runall/.github/workflows/reusable-prepare.yml@88e370f0cf31feb855fb8498c6c7880f69059b33
     with:
       build_run_id: ${{ inputs.build_run_id }}
     secrets:
@@ -47,7 +47,14 @@ jobs:
         uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
         with:
           name: source-workspace-${{ inputs.build_run_id }}
-          path: workspace
+          path: packed
+
+      - name: Unpack source workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p workspace
+          tar -xf packed/source-workspace.tar -C workspace
 
       - name: Set up Java
         uses: actions/setup-java@3a4f6e1af504cf6a31855fa899c6aa5355ba6c12 # v4.7.0
