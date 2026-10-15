@@ -53,10 +53,15 @@ if [[ -z "$EXPECTED_PACKAGE" ]]; then
   EXPECTED_PACKAGE="$(json_get "$SPEC" '.config.android.applicationId // .config.applicationId // empty')"
 fi
 
+expected_version_name="$(json_get "$SPEC" '.config.android.versionName // empty')"
+expected_version_code="$(json_get "$SPEC" '.config.android.versionCode // empty')"
+
 tmpdir="$(mktemp -d)"
 cleanup() {
   if [[ -n "${tmpdir:-}" && -d "$tmpdir" ]]; then
-    find "$tmpdir" -mindepth 1 -maxdepth 1 -type f -exec rm -f {} \;
+    find "$tmpdir" -type f -exec rm -f {} \;
+    find "$tmpdir" -mindepth 1 -type d -exec rmdir {} \; 2>/dev/null || true
+    rmdir "$tmpdir" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
@@ -104,12 +109,29 @@ apksigner sign \
 
 apksigner verify --verbose "$OUTPUT"
 
-if [[ -n "$EXPECTED_PACKAGE" ]]; then
+if [[ -n "$EXPECTED_PACKAGE" ]] || [[ -n "$expected_version_name" ]] || [[ -n "$expected_version_code" ]]; then
   require_cmd aapt
-  pkg="$(aapt dump badging "$OUTPUT" | sed -n "s/package: name='\([^']*\)'.*/\1/p" | head -1)"
-  if [[ "$pkg" != "$EXPECTED_PACKAGE" ]]; then
-    log "package mismatch: got $pkg expected $EXPECTED_PACKAGE"
-    exit 1
+  badging="$(aapt dump badging "$OUTPUT")"
+  if [[ -n "$EXPECTED_PACKAGE" ]]; then
+    pkg="$(echo "$badging" | sed -n "s/package: name='\([^']*\)'.*/\1/p" | head -1)"
+    if [[ "$pkg" != "$EXPECTED_PACKAGE" ]]; then
+      log "package mismatch: got $pkg expected $EXPECTED_PACKAGE"
+      exit 1
+    fi
+  fi
+  if [[ -n "$expected_version_name" ]]; then
+    vname="$(echo "$badging" | sed -n "s/package: name='[^']*' versionCode='[^']*' versionName='\([^']*\)'.*/\1/p" | head -1)"
+    if [[ "$vname" != "$expected_version_name" ]]; then
+      log "versionName mismatch: got $vname expected $expected_version_name"
+      exit 1
+    fi
+  fi
+  if [[ -n "$expected_version_code" ]]; then
+    vcode="$(echo "$badging" | sed -n "s/package: name='[^']*' versionCode='\([^']*\)'.*/\1/p" | head -1)"
+    if [[ "$vcode" != "$expected_version_code" ]]; then
+      log "versionCode mismatch: got $vcode expected $expected_version_code"
+      exit 1
+    fi
   fi
 fi
 

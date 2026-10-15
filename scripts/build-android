@@ -10,8 +10,8 @@ usage() {
   cat <<'EOF'
 Usage: build-android --spec <path> --workspace <dir> [--output-dir <dir>]
 
-Environment:
-  COSMOS_BUILD_REPOSITORY_TOKEN  Optional token for private git clones
+The workspace must already contain a detached checkout at the frozen SHAs (see checkout-source).
+No OIDC, platform tokens, or signing keys are used in this script.
 EOF
 }
 
@@ -39,31 +39,27 @@ if [[ "$platform" != "android" ]]; then
   exit 1
 fi
 
-repository="$(json_get "$SPEC" '.repository')"
 source_commit="$(json_get "$SPEC" '.sourceCommit')"
 orion_sha="$(json_get "$SPEC" '.orionCommit // .config.orionCommit // empty')"
 targets="$(json_get "$SPEC" '.targets | join(",")')"
 
-mkdir -p "$WORKSPACE" "$OUTPUT_DIR"
-
-clone_url="https://github.com/${repository}.git"
-if [[ -n "${COSMOS_BUILD_REPOSITORY_TOKEN:-}" ]]; then
-  clone_url="https://x-access-token:${COSMOS_BUILD_REPOSITORY_TOKEN}@github.com/${repository}.git"
-fi
+mkdir -p "$OUTPUT_DIR"
 
 if [[ ! -d "${WORKSPACE}/.git" ]]; then
-  git clone "$clone_url" "$WORKSPACE"
+  log "workspace is not a git checkout; run checkout-source in prepare"
+  exit 1
 fi
 
-git -C "$WORKSPACE" fetch --depth=1 origin "$source_commit"
-git -C "$WORKSPACE" checkout --detach "$source_commit"
+actual_source="$(git -C "$WORKSPACE" rev-parse HEAD)"
+if [[ "$actual_source" != "$source_commit" ]]; then
+  log "workspace source commit mismatch"
+  exit 1
+fi
 
 if [[ -n "$orion_sha" && -d "${WORKSPACE}/orion" ]]; then
-  git -C "$WORKSPACE/orion" fetch --depth=1 origin "$orion_sha" || true
-  git -C "$WORKSPACE/orion" checkout --detach "$orion_sha"
-  actual="$(git -C "$WORKSPACE/orion" rev-parse HEAD)"
-  if [[ "$actual" != "$orion_sha" ]]; then
-    log "orion HEAD mismatch"
+  actual_orion="$(git -C "$WORKSPACE/orion" rev-parse HEAD)"
+  if [[ "$actual_orion" != "$orion_sha" ]]; then
+    log "workspace orion commit mismatch"
     exit 1
   fi
 fi

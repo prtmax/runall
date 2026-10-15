@@ -8,77 +8,23 @@ on:
         required: true
         type: string
 
+# Compile must not receive id-token. Sensitive jobs opt in below.
 permissions:
   contents: read
 
 jobs:
   prepare:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
-    outputs:
-      platform: ${{ steps.meta.outputs.platform }}
-      targets: ${{ steps.meta.outputs.targets }}
-      repository: ${{ steps.meta.outputs.repository }}
-      source_commit: ${{ steps.meta.outputs.source_commit }}
-      orion_commit: ${{ steps.meta.outputs.orion_commit }}
-      application_id: ${{ steps.meta.outputs.application_id }}
-    env:
-      BUILD_RUN_ID: ${{ inputs.build_run_id }}
+    uses: ./.github/workflows/reusable-prepare.yml
+    with:
+      build_run_id: ${{ inputs.build_run_id }}
+    secrets:
       COSMOS_BUILD_AUTH_EXCHANGE_URL: ${{ secrets.COSMOS_BUILD_AUTH_EXCHANGE_URL }}
       COSMOS_BUILD_SPEC_URL: ${{ secrets.COSMOS_BUILD_SPEC_URL }}
       COSMOS_BUILD_CALLBACK_URL: ${{ secrets.COSMOS_BUILD_CALLBACK_URL }}
       COSMOS_BUILD_REPOSITORY_TOKEN: ${{ secrets.COSMOS_BUILD_REPOSITORY_TOKEN }}
-    steps:
-      - name: Checkout runall
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Exchange OIDC for build credential
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "$BUILD_RUN_ID"
-          test -n "${COSMOS_BUILD_AUTH_EXCHANGE_URL:-}"
-          ./scripts/exchange-build-credential --run-id "$BUILD_RUN_ID" --output-env "$GITHUB_ENV"
-
-      - name: Load frozen build spec
-        id: meta
-        shell: bash
-        run: |
-          set -euo pipefail
-          ./scripts/load-build-spec --output build-spec.json --run-id "$BUILD_RUN_ID"
-          echo "platform=$(jq -r .platform build-spec.json)" >> "$GITHUB_OUTPUT"
-          echo "targets=$(jq -c .targets build-spec.json)" >> "$GITHUB_OUTPUT"
-          echo "repository=$(jq -r .repository build-spec.json)" >> "$GITHUB_OUTPUT"
-          echo "source_commit=$(jq -r .sourceCommit build-spec.json)" >> "$GITHUB_OUTPUT"
-          echo "orion_commit=$(jq -r '.orionCommit // .config.orionCommit // empty' build-spec.json)" >> "$GITHUB_OUTPUT"
-          echo "application_id=$(jq -r '.config.android.applicationId // .config.applicationId // empty' build-spec.json)" >> "$GITHUB_OUTPUT"
-
-      - name: Report running (prepare)
-        shell: bash
-        env:
-          COSMOS_BUILD_CREDENTIAL: ${{ env.COSMOS_BUILD_CREDENTIAL }}
-        run: |
-          set -euo pipefail
-          ./scripts/report-result --status running --phase prepare --run-id "$BUILD_RUN_ID"
-
-      - name: Upload build spec artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: build-spec-${{ inputs.build_run_id }}
-          path: build-spec.json
-          retention-days: 7
-
-      - name: Report prepare failure
-        if: failure()
-        shell: bash
-        env:
-          COSMOS_BUILD_CREDENTIAL: ${{ env.COSMOS_BUILD_CREDENTIAL }}
-        run: |
-          set -euo pipefail
-          ./scripts/report-result --status failed --phase prepare --run-id "$BUILD_RUN_ID" --error-message "runall prepare failed" || true
 
   build-android:
     needs: prepare
@@ -87,13 +33,6 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-      id-token: write
-    env:
-      BUILD_RUN_ID: ${{ inputs.build_run_id }}
-      COSMOS_BUILD_CALLBACK_URL: ${{ secrets.COSMOS_BUILD_CALLBACK_URL }}
-      COSMOS_BUILD_REPOSITORY_TOKEN: ${{ secrets.COSMOS_BUILD_REPOSITORY_TOKEN }}
-      COSMOS_BUILD_AUTH_EXCHANGE_URL: ${{ secrets.COSMOS_BUILD_AUTH_EXCHANGE_URL }}
-      COSMOS_BUILD_SPEC_URL: ${{ secrets.COSMOS_BUILD_SPEC_URL }}
     steps:
       - name: Checkout runall
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -104,17 +43,11 @@ jobs:
           name: build-spec-${{ inputs.build_run_id }}
           path: .
 
-      - name: Exchange OIDC for build credential
-        shell: bash
-        run: |
-          set -euo pipefail
-          ./scripts/exchange-build-credential --run-id "$BUILD_RUN_ID" --output-env "$GITHUB_ENV"
-
-      - name: Report build phase
-        shell: bash
-        env:
-          COSMOS_BUILD_CREDENTIAL: ${{ env.COSMOS_BUILD_CREDENTIAL }}
-        run: ./scripts/report-result --status running --phase build --run-id "$BUILD_RUN_ID"
+      - name: Download source workspace
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
+        with:
+          name: source-workspace-${{ inputs.build_run_id }}
+          path: workspace
 
       - name: Set up Java
         uses: actions/setup-java@3a4f6e1af504cf6a31855fa899c6aa5355ba6c12 # v4.7.0
@@ -126,190 +59,46 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p workspace unsigned
+          mkdir -p unsigned
           ./scripts/build-android --spec build-spec.json --workspace workspace --output-dir unsigned
 
       - name: Upload unsigned artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: unsigned-${{ inputs.build_run_id }}
           path: unsigned/
           if-no-files-found: error
 
-      - name: Report build failure
-        if: failure()
-        shell: bash
-        env:
-          COSMOS_BUILD_CREDENTIAL: ${{ env.COSMOS_BUILD_CREDENTIAL }}
-        run: ./scripts/report-result --status failed --phase build --run-id "$BUILD_RUN_ID" --error-message "runall android build failed" || true
-
   sign-android:
     needs: [prepare, build-android]
-    if: needs.prepare.outputs.platform == 'android'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    if: needs.prepare.outputs.platform == 'android' && needs.build-android.result == 'success'
     permissions:
       contents: read
       id-token: write
-    env:
-      BUILD_RUN_ID: ${{ inputs.build_run_id }}
-      COSMOS_BUILD_SIGN_MATERIAL_URL: ${{ secrets.COSMOS_BUILD_SIGN_MATERIAL_URL }}
-      COSMOS_BUILD_CALLBACK_URL: ${{ secrets.COSMOS_BUILD_CALLBACK_URL }}
+    uses: ./.github/workflows/reusable-sign-android.yml
+    with:
+      build_run_id: ${{ inputs.build_run_id }}
+      application_id: ${{ needs.prepare.outputs.application_id }}
+    secrets:
       COSMOS_BUILD_AUTH_EXCHANGE_URL: ${{ secrets.COSMOS_BUILD_AUTH_EXCHANGE_URL }}
-    steps:
-      - name: Checkout runall
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-
-      - name: Download build spec
-        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806
-        with:
-          name: build-spec-${{ inputs.build_run_id }}
-          path: spec
-
-      - name: Download unsigned artifacts
-        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806
-        with:
-          name: unsigned-${{ inputs.build_run_id }}
-          path: unsigned
-
-      - name: Exchange OIDC for sign credential
-        shell: bash
-        run: |
-          set -euo pipefail
-          ./scripts/exchange-build-credential --run-id "$BUILD_RUN_ID" --output-env "$GITHUB_ENV"
-
-      - name: Report sign phase
-        shell: bash
-        env:
-          COSMOS_BUILD_CREDENTIAL: ${{ env.COSMOS_BUILD_CREDENTIAL }}
-        run: ./scripts/report-result --status running --phase sign --run-id "$BUILD_RUN_ID"
-
-      - name: Install Android build tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq sdkmanager >/dev/null 2>&1 || true
-          if command -v zipalign >/dev/null 2>&1; then exit 0; fi
-          echo "zipalign/apksigner must be on PATH (install Android build-tools in runner image)"
-          exit 1
-
-      - name: Sign APK artifacts
-        shell: bash
-        env:
-          COSMOS_BUILD_CREDENTIAL: ${{ env.COSMOS_BUILD_CREDENTIAL }}
-        run: |
-          set -euo pipefail
-          if [[ -f spec/build-spec.json ]]; then
-            spec="spec/build-spec.json"
-          elif [[ -f spec/build-spec/build-spec.json ]]; then
-            spec="spec/build-spec/build-spec.json"
-          else
-            spec="$(find spec -name build-spec.json -print -quit)"
-          fi
-          test -n "$spec" && test -f "$spec"
-          mkdir -p signed
-          shopt -s nullglob
-          for apk in unsigned/*.apk; do
-            base="$(basename "$apk")"
-            ./scripts/sign-android \
-              --spec "$spec" \
-              --input "$apk" \
-              --output "signed/${base}" \
-              --expected-package "${{ needs.prepare.outputs.application_id }}"
-          done
-          if ! find signed -maxdepth 1 -name '*.apk' | grep -q .; then
-            echo "no apk to sign"
-            exit 1
-          fi
-
-      - name: Upload signed artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: signed-${{ inputs.build_run_id }}
-          path: signed/
-          if-no-files-found: error
-
-      - name: Report sign failure
-        if: failure()
-        shell: bash
-        env:
-          COSMOS_BUILD_CREDENTIAL: ${{ env.COSMOS_BUILD_CREDENTIAL }}
-        run: ./scripts/report-result --status failed --phase sign --run-id "$BUILD_RUN_ID" --error-message "runall android sign failed" || true
+      COSMOS_BUILD_CALLBACK_URL: ${{ secrets.COSMOS_BUILD_CALLBACK_URL }}
+      COSMOS_BUILD_SIGN_MATERIAL_URL: ${{ secrets.COSMOS_BUILD_SIGN_MATERIAL_URL }}
 
   finalize-android:
-    needs: [prepare, sign-android]
-    if: always() && needs.prepare.outputs.platform == 'android' && needs.sign-android.result != 'skipped'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    needs: [prepare, build-android, sign-android]
+    if: >-
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.prepare.outputs.platform == 'android' &&
+      (needs.sign-android.result == 'success' || needs.sign-android.result == 'failure' || needs.build-android.result == 'failure')
     permissions:
       contents: read
       id-token: write
-    env:
-      BUILD_RUN_ID: ${{ inputs.build_run_id }}
-      COSMOS_BUILD_ARTIFACT_UPLOAD_URL: ${{ secrets.COSMOS_BUILD_ARTIFACT_UPLOAD_URL }}
-      COSMOS_BUILD_CALLBACK_URL: ${{ secrets.COSMOS_BUILD_CALLBACK_URL }}
+    uses: ./.github/workflows/reusable-finalize-android.yml
+    with:
+      build_run_id: ${{ inputs.build_run_id }}
+      upstream_result: ${{ needs.sign-android.result == 'success' && 'success' || 'failure' }}
+    secrets:
       COSMOS_BUILD_AUTH_EXCHANGE_URL: ${{ secrets.COSMOS_BUILD_AUTH_EXCHANGE_URL }}
-    steps:
-      - name: Checkout runall
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-
-      - name: Download build spec
-        if: needs.sign-android.result == 'success'
-        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806
-        with:
-          name: build-spec-${{ inputs.build_run_id }}
-          path: spec
-
-      - name: Download signed artifacts
-        if: needs.sign-android.result == 'success'
-        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806
-        with:
-          name: signed-${{ inputs.build_run_id }}
-          path: signed
-
-      - name: Exchange OIDC for finalize credential
-        if: needs.sign-android.result == 'success'
-        shell: bash
-        run: |
-          set -euo pipefail
-          ./scripts/exchange-build-credential --run-id "$BUILD_RUN_ID" --output-env "$GITHUB_ENV"
-
-      - name: Upload to object storage
-        if: needs.sign-android.result == 'success'
-        shell: bash
-        env:
-          COSMOS_BUILD_CREDENTIAL: ${{ env.COSMOS_BUILD_CREDENTIAL }}
-        run: |
-          set -euo pipefail
-          if [[ -f spec/build-spec.json ]]; then
-            spec="spec/build-spec.json"
-          elif [[ -f spec/build-spec/build-spec.json ]]; then
-            spec="spec/build-spec/build-spec.json"
-          else
-            spec="$(find spec -name build-spec.json -print -quit)"
-          fi
-          test -n "$spec" && test -f "$spec"
-          shopt -s nullglob
-          for apk in signed/*.apk; do
-            ./scripts/upload-artifacts --spec "$spec" --artifact "$apk" --target apk
-          done
-
-      - name: Report succeeded
-        if: needs.sign-android.result == 'success'
-        shell: bash
-        env:
-          COSMOS_BUILD_CREDENTIAL: ${{ env.COSMOS_BUILD_CREDENTIAL }}
-        run: ./scripts/report-result --status succeeded --phase finalize --run-id "$BUILD_RUN_ID"
-
-      - name: Report failed
-        if: needs.sign-android.result != 'success'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -z "${COSMOS_BUILD_CREDENTIAL:-}" ]]; then
-            ./scripts/exchange-build-credential --run-id "$BUILD_RUN_ID" --output-env "$GITHUB_ENV" || true
-          fi
-          if [[ -n "${COSMOS_BUILD_CREDENTIAL:-}" ]]; then
-            ./scripts/report-result --status failed --phase finalize --run-id "$BUILD_RUN_ID" --error-message "runall finalize skipped or upstream failed" || true
-          fi
+      COSMOS_BUILD_CALLBACK_URL: ${{ secrets.COSMOS_BUILD_CALLBACK_URL }}
+      COSMOS_BUILD_ARTIFACT_UPLOAD_URL: ${{ secrets.COSMOS_BUILD_ARTIFACT_UPLOAD_URL }}

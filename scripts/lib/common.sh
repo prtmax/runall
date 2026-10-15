@@ -36,6 +36,69 @@ sha256_file() {
   fi
 }
 
+compute_spec_hash() {
+  local spec_file="$1"
+  local common_dir
+  common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  require_cmd python3
+  python3 "${common_dir}/spec_hash.py" "$spec_file" | tr -d '\n'
+}
+
+verify_spec_hash_field() {
+  local spec_file="$1"
+  local declared computed
+  declared="$(json_get "$spec_file" '.specHash')"
+  computed="$(compute_spec_hash "$spec_file")"
+  if [[ "$declared" != "$computed" ]]; then
+    log "specHash does not match canonical document digest"
+    exit 1
+  fi
+}
+
+verify_declared_resource_digests() {
+  local spec_file="$1"
+  require_cmd jq
+  local count root
+  count="$(jq -r '.resources // [] | length' "$spec_file")"
+  if [[ "$count" == "0" ]]; then
+    return 0
+  fi
+  root="${RUNALL_RESOURCE_ROOT:-$(dirname "$spec_file")}"
+  local i=0
+  while [[ "$i" -lt "$count" ]]; do
+    local path digest
+    path="$(jq -r ".resources[$i].path // empty" "$spec_file")"
+    digest="$(jq -r ".resources[$i].sha256 // empty" "$spec_file")"
+    if [[ -z "$path" || -z "$digest" ]]; then
+      log "resource entry missing path or sha256"
+      exit 1
+    fi
+    if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      log "invalid resource digest: $path"
+      exit 1
+    fi
+    if [[ "$path" =~ ^[a-zA-Z][a-zA-Z0-9+.-]*:// ]]; then
+      log "resource path must be a relative file, not a URL: $path"
+      exit 1
+    fi
+    if [[ "$path" == /* || "$path" == *".."* ]]; then
+      log "resource path rejected: $path"
+      exit 1
+    fi
+    local file_path="${root%/}/$path"
+    if [[ ! -f "$file_path" ]]; then
+      log "resource file missing: $path"
+      exit 1
+    fi
+    local actual="sha256:$(sha256_file "$file_path")"
+    if [[ "$actual" != "$digest" ]]; then
+      log "resource digest mismatch: $path"
+      exit 1
+    fi
+    i=$((i + 1))
+  done
+}
+
 validate_build_spec_document() {
   local spec_file="$1" expected_run_id="${2:-}"
 
@@ -61,4 +124,7 @@ validate_build_spec_document() {
       exit 1
     fi
   fi
+
+  verify_spec_hash_field "$spec_file"
+  verify_declared_resource_digests "$spec_file"
 }

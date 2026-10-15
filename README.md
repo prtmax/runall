@@ -16,14 +16,19 @@ Trigger `.github/workflows/android-build.yml` with:
 }
 ```
 
-The workflow runs four Android stages as separate jobs:
+The dispatch workflow calls three fixed reusable workflows for the sensitive stages
+(`reusable-prepare.yml`, `reusable-sign-android.yml`, `reusable-finalize-android.yml`).
+The compile job is an ordinary job with `contents: read` only: no `id-token: write`,
+no repository token, and no signing material. Prepare checks out the frozen source
+and uploads that workspace. Finalize still runs when compile or sign fails so the
+platform receives a failed callback.
 
 | Job | Purpose | Sensitive access |
 |-----|---------|------------------|
-| `prepare` | OIDC exchange, load frozen spec, validate shape/hash binding | Read spec + resources |
-| `build-android` | Checkout Orion at pinned SHAs, Flutter release build (unsigned) | Read-only source clone |
-| `sign-android` | zipalign/apksigner with attempt-scoped signing material | Sign material only |
-| `finalize-android` | Presigned upload + terminal callback | Upload + finalize scope |
+| `prepare` | OIDC exchange, load frozen spec, recompute canonical hash and resource digests, checkout source | Read spec + resources; clone token stays in this job |
+| `build-android` | Flutter release APK/AAB from the prepared workspace, unsigned | None |
+| `sign-android` | APK zipalign/apksigner or AAB jarsigner, version and certificate checks | Sign material only |
+| `finalize-android` | Presigned upload + terminal callback, including upstream failure | Upload + finalize scope |
 
 iOS IPA support will follow the same pattern in a later change; phase A focuses on
 Android scripts and workflow structure.
@@ -34,8 +39,10 @@ Android scripts and workflow structure.
 |--------|------|
 | `scripts/exchange-build-credential` | GitHub OIDC → Cosmos bearer token |
 | `scripts/load-build-spec` | Fetch or load local frozen spec + validation |
-| `scripts/build-android` | Unsigned Flutter APK/AAB from spec |
-| `scripts/sign-android` | Sign APK, verify package + cert fingerprint |
+| `scripts/checkout-source` | Prepare-only clone. Token is a per-command header, never a remote URL |
+| `scripts/build-android` | Unsigned Flutter APK/AAB from an existing checkout |
+| `scripts/sign-android` | Sign APK, verify package, version, and cert fingerprint |
+| `scripts/sign-aab` | Sign AAB with jarsigner, verify version and cert fingerprint |
 | `scripts/upload-artifacts` | Request presigned PUT and upload |
 | `scripts/report-result` | Attempt progress / terminal status callback |
 
