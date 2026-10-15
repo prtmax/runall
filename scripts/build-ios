@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Build an unsigned iOS Runner.app from a frozen spec. Signing happens later.
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/common.sh
+source "${ROOT_DIR}/scripts/lib/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: build-ios --spec <path> --workspace <dir> [--output-dir <dir>]
+
+The workspace must already contain a detached checkout at the frozen SHAs.
+This script refuses signing material and does not produce an IPA.
+EOF
+}
+
+SPEC=""
+WORKSPACE=""
+OUTPUT_DIR="${RUNALL_ARTIFACT_DIR:-artifacts}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --spec) SPEC="$2"; shift 2 ;;
+    --workspace) WORKSPACE="$2"; shift 2 ;;
+    --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) log "unknown argument: $1"; usage; exit 1 ;;
+  esac
+done
+
+assert_non_empty "--spec" "$SPEC"
+assert_non_empty "--workspace" "$WORKSPACE"
+validate_build_spec_document "$SPEC"
+
+platform="$(json_get "$SPEC" '.platform')"
+if [[ "$platform" != "ios" ]]; then
+  log "build-ios requires platform ios"
+  exit 1
+fi
+
+if [[ -n "${ANDROID_KEYSTORE_PATH:-}${IOS_CERTIFICATE_PASSWORD:-}${IOS_CERTIFICATE_P12:-}${IOS_PROVISIONING_PROFILE:-}${CODE_SIGN_IDENTITY:-}" ]]; then
+  log "build-ios refuses signing material"
+  exit 1
+fi
+
+source_commit="$(json_get "$SPEC" '.sourceCommit')"
+orion_sha="$(json_get "$SPEC" '.orionCommit // .config.orionCommit // empty')"
+
+mkdir -p "$OUTPUT_DIR"
+
+if [[ ! -d "${WORKSPACE}/.git" ]]; then
+  log "workspace is not a git checkout; run checkout-source in prepare"
+  exit 1
+fi
+
+actual_source="$(git -C "$WORKSPACE" rev-parse HEAD)"
+if [[ "$actual_source" != "$source_commit" ]]; then
+  log "workspace source commit mismatch"
+  exit 1
+fi
+
+if [[ -n "$orion_sha" && -d "${WORKSPACE}/orion" ]]; then
+  actual_orion="$(git -C "$WORKSPACE/orion" rev-parse HEAD)"
+  if [[ "$actual_orion" != "$orion_sha" ]]; then
+    log "workspace orion commit mismatch"
+    exit 1
+  fi
+fi
+
+app_dir="$WORKSPACE"
+[[ -d "${WORKSPACE}/apps/rigel" ]] && app_dir="${WORKSPACE}/apps/rigel"
+
+if [[ -f "${WORKSPACE}/.fvmrc" ]] || [[ -f "${app_dir}/.fvmrc" ]]; then
+  require_cmd fvm
+  (cd "${app_dir}" && fvm install && fvm flutter --version)
+  FLUTTER_CMD=(fvm flutter)
+else
+  require_cmd flutter
+  FLUTTER_CMD=(flutter)
+fi
+
+cd "$app_dir"
+"${FLUTTER_CMD[@]}" pub get
+"${FLUTTER_CMD[@]}" build ios --release --no-codesign
+
+app_path=""
+while IFS= read -r candidate; do
+  app_path="$candidate"
+  break
+done < <(find build/ios/iphoneos -name 'Runner.app' -type d -print)
+if [[ -z "$app_path" || "$app_path" == *".."* ]]; then
+  log "unsigned Runner.app missing"
+  exit 1
+fi
+
+cp -R "$app_path" "${OUTPUT_DIR}/Runner.app"
+log "unsigned ios app in $OUTPUT_DIR"

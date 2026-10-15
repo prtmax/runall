@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+# Sign an unsigned Runner.app and package an IPA. Do not run code from the app.
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/common.sh
+source "${ROOT_DIR}/scripts/lib/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: sign-ios --spec <path> --input <Runner.app> --output <ipa>
+
+Missing certificate, profile, or team fails closed. This does not create a
+debug or unsigned IPA.
+EOF
+}
+
+SPEC=""
+INPUT=""
+OUTPUT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --spec) SPEC="$2"; shift 2 ;;
+    --input) INPUT="$2"; shift 2 ;;
+    --output) OUTPUT="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) log "unknown argument: $1"; usage; exit 1 ;;
+  esac
+done
+
+assert_non_empty "--spec" "$SPEC"
+assert_non_empty "--input" "$INPUT"
+assert_non_empty "--output" "$OUTPUT"
+if [[ "$INPUT" == *".."* || "$OUTPUT" == *".."* || "$(basename "$INPUT")" != *.app || "$OUTPUT" != *.ipa ]]; then
+  log "ios artifact path rejected"
+  exit 1
+fi
+if [[ -L "$INPUT" || ! -d "$INPUT" ]]; then
+  log "input app bundle missing: $INPUT"
+  exit 1
+fi
+if [[ "$OUTPUT" != /* ]]; then
+  mkdir -p "$(dirname "$OUTPUT")"
+  OUTPUT="$(cd "$(dirname "$OUTPUT")" && pwd)/$(basename "$OUTPUT")"
+fi
+mkdir -p "$(dirname "$OUTPUT")"
+
+validate_build_spec_document "$SPEC"
+platform="$(json_get "$SPEC" '.platform')"
+if [[ "$platform" != "ios" ]]; then
+  log "sign-ios requires platform ios"
+  exit 1
+fi
+
+bundle_id="$(json_get "$SPEC" '.config.app.bundleId // empty')"
+expected_version_name="$(json_get "$SPEC" '.config.app.versionName // empty')"
+expected_version_code="$(read_app_version_code "$SPEC")"
+assert_non_empty "bundle id" "$bundle_id"
+assert_non_empty "versionName" "$expected_version_name"
+
+tmpdir="$(mktemp -d)"
+keychain=""
+reported=0
+cleanup() {
+  if [[ -n "$keychain" ]]; then
+    security delete-keychain "$keychain" >/dev/null 2>&1 || true
+  fi
+  discard_unreported_output "$reported" "$OUTPUT" "$INPUT"
+  if [[ -n "${tmpdir:-}" && -d "$tmpdir" ]]; then
+    find "$tmpdir" -type f -exec rm -f {} \;
+    find "$tmpdir" -mindepth 1 -type d -exec rmdir {} \; 2>/dev/null || true
+    rmdir "$tmpdir" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+assert_non_empty "COSMOS_BUILD_SIGN_MATERIAL_URL" "${COSMOS_BUILD_SIGN_MATERIAL_URL:-}"
+assert_non_empty "COSMOS_BUILD_CREDENTIAL" "${COSMOS_BUILD_CREDENTIAL:-}"
+assert_non_empty "BUILD_RUN_ID" "${BUILD_RUN_ID:-}"
+require_cmd curl
+require_cmd jq
+require_cmd openssl
+require_cmd security
+require_cmd codesign
+require_cmd zip
+require_cmd python3
+
+curl --fail-with-body -sS \
+  -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
+  "${COSMOS_BUILD_SIGN_MATERIAL_URL%/}/build-runs/${BUILD_RUN_ID}/ios-signing" \
+  > "$tmpdir/material.json"
+
+p12_b64="$(jq -r '.certificateP12Base64 // empty' "$tmpdir/material.json")"
+password="$(jq -r '.certificatePassword // empty' "$tmpdir/material.json")"
+profile_b64="$(jq -r '.provisioningProfileBase64 // empty' "$tmpdir/material.json")"
+team_id="$(jq -r '.teamId // empty' "$tmpdir/material.json")"
+cert="$(jq -r '.certificateSha256 // empty' "$tmpdir/material.json")"
+assert_non_empty "certificateP12Base64" "$p12_b64"
+assert_non_empty "certificatePassword" "$password"
+assert_non_empty "provisioningProfileBase64" "$profile_b64"
+assert_non_empty "teamId" "$team_id"
+assert_non_empty "certificateSha256" "$cert"
+if [[ "$password" == "null" || "$team_id" == "null" ]]; then
+  log "ios signing material incomplete"
+  exit 1
+fi
+
+base64 -d <<< "$p12_b64" > "$tmpdir/cert.p12"
+base64 -d <<< "$profile_b64" > "$tmpdir/profile.mobileprovision"
+openssl pkcs12 -in "$tmpdir/cert.p12" -nokeys -passin "pass:${password}" -out "$tmpdir/cert.pem"
+fingerprint="$(openssl x509 -in "$tmpdir/cert.pem" -fingerprint -sha256 -noout | sed -n 's/.*Fingerprint=//p')"
+got="$(normalize_sha256 "$fingerprint")"
+want="$(normalize_sha256 "$cert")"
+if [[ "$got" != "$want" ]]; then
+  log "iOS certificate fingerprint mismatch"
+  exit 1
+fi
+
+# codesign identities are keychain names or SHA-1 hashes. The SHA-256
+# fingerprint checked above is not a signing identity.
+keychain="$tmpdir/signing.keychain-db"
+keychain_pass="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+security create-keychain -p "$keychain_pass" "$keychain"
+security set-keychain-settings -lut 600 "$keychain"
+security unlock-keychain -p "$keychain_pass" "$keychain"
+security import "$tmpdir/cert.p12" -k "$keychain" -P "$password" -f pkcs12 -T /usr/bin/codesign
+security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_pass" "$keychain"
+identity_text="$(security find-identity -p codesigning -v "$keychain")"
+identity="$(printf '%s\n' "$identity_text" | sed -n 's/^[[:space:]]*[0-9][0-9]*)[[:space:]]\([0-9A-Fa-f]\{40\}\)[[:space:]].*/\1/p')"
+identity="${identity%%$'\n'*}"
+if [[ ! "$identity" =~ ^[0-9A-Fa-f]{40}$ || "${identity,,}" == "$want" ]]; then
+  log "signing identity was not imported into the temporary keychain"
+  exit 1
+fi
+unset keychain_pass
+
+security cms -D -i "$tmpdir/profile.mobileprovision" > "$tmpdir/profile.plist"
+python3 - "$tmpdir/profile.plist" "$bundle_id" "$team_id" "$expected_version_name" "$expected_version_code" <<'PY'
+import datetime
+import plistlib
+import sys
+from pathlib import Path
+
+profile = plistlib.loads(Path(sys.argv[1]).read_bytes())
+bundle_id, team_id = sys.argv[2], sys.argv[3]
+teams = profile.get("TeamIdentifier") or []
+if team_id not in teams:
+    sys.exit("profile team mismatch")
+app_id = (profile.get("Entitlements") or {}).get("application-identifier", "")
+if app_id != f"{team_id}.{bundle_id}":
+    sys.exit("profile bundle id mismatch")
+expires = profile.get("ExpirationDate")
+if not isinstance(expires, datetime.datetime):
+    sys.exit("profile expiration missing")
+if expires.tzinfo is None:
+    expires = expires.replace(tzinfo=datetime.timezone.utc)
+if expires <= datetime.datetime.now(datetime.timezone.utc):
+    sys.exit("profile expired")
+name = profile.get("Name") or ""
+if "debug" in name.lower():
+    sys.exit("debug profile cannot sign a release IPA")
+PY
+
+app_name="$(basename "$INPUT")"
+mkdir -p "$tmpdir/Payload"
+cp -R "$INPUT" "$tmpdir/Payload/$app_name"
+cp "$tmpdir/profile.mobileprovision" "$tmpdir/Payload/$app_name/embedded.mobileprovision"
+info="$tmpdir/Payload/$app_name/Info.plist"
+if [[ ! -f "$info" ]]; then
+  log "Info.plist missing from unsigned app"
+  exit 1
+fi
+python3 - "$info" "$bundle_id" "$expected_version_name" "$expected_version_code" <<'PY'
+import plistlib
+import sys
+from pathlib import Path
+
+info = plistlib.loads(Path(sys.argv[1]).read_bytes())
+bundle_id, version_name, version_code = sys.argv[2], sys.argv[3], sys.argv[4]
+if info.get("CFBundleIdentifier") != bundle_id:
+    sys.exit("app bundle id mismatch")
+if str(info.get("CFBundleShortVersionString", "")) != version_name:
+    sys.exit("app version mismatch")
+if str(info.get("CFBundleVersion", "")) != version_code:
+    sys.exit("app build number mismatch")
+PY
+codesign --force --sign "$identity" --keychain "$keychain" --timestamp=none "$tmpdir/Payload/$app_name"
+codesign --verify --strict "$tmpdir/Payload/$app_name"
+(cd "$tmpdir" && zip -qr "$OUTPUT" Payload)
+[[ -f "$OUTPUT" ]] || { log "ipa was not written"; exit 1; }
+report_sign_result ipa "$bundle_id" "$expected_version_name" "$expected_version_code" "$want" "$OUTPUT"
+reported=1
+log "signed ipa written to $OUTPUT"

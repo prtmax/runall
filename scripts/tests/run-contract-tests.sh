@@ -106,7 +106,7 @@ export MOCK_UPLOAD_PAYLOAD="${upload_payload}"
   --spec "${TMPDIR}/spec.json" \
   --artifact "${TMPDIR}/fake.apk" \
   --target apk
-jq -e '.target == "apk" and .fileName == "fake.apk" and (.sha256 | startswith("sha256:"))' "$upload_payload" >/dev/null
+jq -e '.target == "apk" and .fileName == "fake.apk" and (.sha256 | test("^[0-9a-f]{64}$"))' "$upload_payload" >/dev/null
 
 log "contract: report-result payload shape (dry run)"
 export COSMOS_BUILD_CALLBACK_URL="https://example.test/callback"
@@ -188,9 +188,12 @@ if "id-token:" in job or "COSMOS_BUILD_REPOSITORY_TOKEN" in job or "COSMOS_BUILD
     raise SystemExit("compile job still has OIDC or a long-lived token")
 if "contents: read" not in job:
     raise SystemExit("compile job missing contents: read")
-for name in ("reusable-prepare.yml", "reusable-sign-android.yml", "reusable-finalize-android.yml"):
+for name in ("reusable-prepare.yml", "reusable-sign-android.yml", "reusable-finalize-android.yml", "reusable-sign-ios.yml", "reusable-finalize-ios.yml"):
     if name not in text:
         raise SystemExit(f"missing reusable workflow call: {name}")
+ios = text[text.index("  build-ios:"):text.index("  sign-ios:")]
+if "id-token:" in ios or "COSMOS_BUILD_REPOSITORY_TOKEN" in ios:
+    raise SystemExit("ios compile job still has OIDC or a repository token")
 if "upstream_result" not in text:
     raise SystemExit("finalize is not wired to upstream failure")
 if "run-name: cosmos-build-${{ inputs.build_run_id }}" not in text:
@@ -209,6 +212,9 @@ grep -q 'scripts/sign-aab' "${ROOT_DIR}/.github/workflows/reusable-sign-android.
 grep -q 'source-workspace.tar' "${ROOT_DIR}/.github/workflows/reusable-prepare.yml"
 grep -q 'source-workspace.tar' "${ROOT_DIR}/.github/workflows/android-build.yml"
 grep -q -- '--target aab' "$finalize"
+grep -q 'scripts/sign-ios' "${ROOT_DIR}/.github/workflows/reusable-sign-ios.yml"
+grep -q -- '--target ipa' "${ROOT_DIR}/.github/workflows/reusable-finalize-ios.yml"
+grep -q -- '--no-codesign' "${ROOT_DIR}/scripts/build-ios"
 
 log "contract: checkout-source does not persist the clone token"
 checkout_root="${TMPDIR}/checkout"
@@ -263,15 +269,25 @@ sign_tmp="${TMPDIR}/signtmp"
 mkdir -p "$sign_tmp"
 printf 'dummy-apk' > "${TMPDIR}/unsigned.apk"
 signed_spec="${TMPDIR}/signed-spec.json"
-jq '.config.android.versionName = "1.2.3" | .config.android.versionCode = "7"' "$FIXTURE" > "$signed_spec"
+jq '.config.app.applicationId = "com.example.contract" | .config.app.versionName = "1.2.3" | .config.app.versionCode = 7' "$FIXTURE" > "$signed_spec"
 signed_hash="$(compute_spec_hash "$signed_spec")"
 jq --arg h "$signed_hash" '.specHash = $h' "$signed_spec" > "${TMPDIR}/signed-spec-hashed.json"
 mock_sign_bin="${TMPDIR}/signbin"
 mkdir -p "$mock_sign_bin"
 cat > "${mock_sign_bin}/curl" <<'MOCKCURL'
 #!/usr/bin/env bash
+data=""
+prev=""
+for arg in "$@"; do
+  if [[ "$prev" == "--data-binary" ]]; then data="$arg"; fi
+  prev="$arg"
+done
+if [[ "$*" == *"sign-results"* ]]; then
+  printf '%s\n' "$data" > "${MOCK_SIGN_PAYLOAD:?}"
+  exit 0
+fi
 if [[ "$*" == *"android-signing"* ]]; then
-  printf '%s\n' '{"keystoreBase64":"aGVsbG8=","keystorePassword":"ks-secret","keyPassword":"key-secret","keyAlias":"alias-secret","certificateSha256":"AA:BB"}'
+  printf '%s\n' "{\"keystoreBase64\":\"aGVsbG8=\",\"keystorePassword\":\"ks-secret\",\"keyPassword\":\"key-secret\",\"keyAlias\":\"alias-secret\",\"certificateSha256\":\"${MOCK_ANDROID_CERT:-}\"}"
   exit 0
 fi
 exit 1
@@ -282,6 +298,7 @@ exit 0
 MOCKZ
 cat > "${mock_sign_bin}/apksigner" <<'MOCKA'
 #!/usr/bin/env bash
+printf 'apksigner\n' >> "${MOCK_TOOL_LOG:?}"
 if [[ "$1" == "sign" ]]; then
   out=""
   prev=""
@@ -293,7 +310,7 @@ if [[ "$1" == "sign" ]]; then
   exit 0
 fi
 if [[ "$*" == *"--print-certs"* ]]; then
-  printf '%s\n' 'Signer #1 certificate SHA-256 digest: CC:DD'
+  printf '%s\n' "Signer #1 certificate SHA-256 digest: ${MOCK_ANDROID_SIGNED_CERT:?}"
   exit 0
 fi
 exit 0
@@ -303,7 +320,16 @@ cat > "${mock_sign_bin}/aapt" <<'MOCKP'
 printf "%s\n" "package: name='com.example.contract' versionCode='7' versionName='1.2.3'"
 MOCKP
 chmod +x "${mock_sign_bin}/curl" "${mock_sign_bin}/zipalign" "${mock_sign_bin}/apksigner" "${mock_sign_bin}/aapt"
+android_cert="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+signed_android_cert="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+sign_payload="${TMPDIR}/sign-payload.json"
+tool_log="${TMPDIR}/tool.log"
+: > "$tool_log"
 if TMPDIR="$sign_tmp" PATH="${mock_sign_bin}:${PATH}" \
+  MOCK_ANDROID_CERT="$android_cert" \
+  MOCK_ANDROID_SIGNED_CERT="$signed_android_cert" \
+  MOCK_SIGN_PAYLOAD="$sign_payload" \
+  MOCK_TOOL_LOG="$tool_log" \
   COSMOS_BUILD_SIGN_MATERIAL_URL="https://example.test/internal" \
   COSMOS_BUILD_CREDENTIAL="test-credential" \
   BUILD_RUN_ID="run-contract-test" \
@@ -315,20 +341,80 @@ if TMPDIR="$sign_tmp" PATH="${mock_sign_bin}:${PATH}" \
   log "expected fingerprint mismatch"
   exit 1
 fi
+if [[ -f "$sign_payload" ]]; then
+  log "fingerprint mismatch still posted a sign receipt"
+  exit 1
+fi
+if [[ -f "${TMPDIR}/signed.apk" ]]; then
+  log "fingerprint mismatch left a signed apk"
+  exit 1
+fi
 if find "$sign_tmp" -type f -print | grep -q .; then
   log "signing temp files were left behind"
   find "$sign_tmp" -type f -print >&2
   exit 1
 fi
 
+log "contract: sign-android refuses an empty certificate before signing"
+: > "$tool_log"
+rm -f "${TMPDIR}/signed.apk" "$sign_payload"
+if PATH="${mock_sign_bin}:${PATH}" \
+  MOCK_ANDROID_CERT="" \
+  MOCK_ANDROID_SIGNED_CERT="$signed_android_cert" \
+  MOCK_SIGN_PAYLOAD="$sign_payload" \
+  MOCK_TOOL_LOG="$tool_log" \
+  COSMOS_BUILD_SIGN_MATERIAL_URL="https://example.test/internal" \
+  COSMOS_BUILD_CALLBACK_URL="https://example.test/callback" \
+  COSMOS_BUILD_CREDENTIAL="test-credential" \
+  BUILD_RUN_ID="run-contract-test" \
+  "${ROOT_DIR}/scripts/sign-android" \
+    --spec "${TMPDIR}/signed-spec-hashed.json" \
+    --input "${TMPDIR}/unsigned.apk" \
+    --output "${TMPDIR}/signed.apk" \
+    --expected-package "com.example.contract"; then
+  log "sign-android accepted an empty certificate"
+  exit 1
+fi
+if [[ -f "${TMPDIR}/signed.apk" || -f "$sign_payload" ]] || grep -q apksigner "$tool_log"; then
+  log "empty certificate still signed or posted a receipt"
+  exit 1
+fi
+
+log "contract: sign-android refuses a string versionCode"
+string_spec="${TMPDIR}/string-version-spec.json"
+jq '.config.app.versionCode = "7"' "${TMPDIR}/signed-spec-hashed.json" > "$string_spec"
+string_hash="$(compute_spec_hash "$string_spec")"
+jq --arg h "$string_hash" '.specHash = $h' "$string_spec" > "${TMPDIR}/string-version-spec-hashed.json"
+if PATH="${mock_sign_bin}:${PATH}" \
+  MOCK_ANDROID_CERT="$android_cert" \
+  MOCK_ANDROID_SIGNED_CERT="$android_cert" \
+  MOCK_SIGN_PAYLOAD="$sign_payload" \
+  MOCK_TOOL_LOG="$tool_log" \
+  COSMOS_BUILD_SIGN_MATERIAL_URL="https://example.test/internal" \
+  COSMOS_BUILD_CREDENTIAL="test-credential" \
+  BUILD_RUN_ID="run-contract-test" \
+  "${ROOT_DIR}/scripts/sign-android" \
+    --spec "${TMPDIR}/string-version-spec-hashed.json" \
+    --input "${TMPDIR}/unsigned.apk" \
+    --output "${TMPDIR}/string.apk" \
+    --expected-package "com.example.contract"; then
+  log "sign-android accepted a string versionCode"
+  exit 1
+fi
+if [[ -f "$sign_payload" ]]; then
+  log "string versionCode posted a sign receipt"
+  exit 1
+fi
+
 log "contract: sign-aab rejects fingerprint mismatch"
 cat > "${mock_sign_bin}/jarsigner" <<'MOCKJ'
 #!/usr/bin/env bash
+printf 'jarsigner\n' >> "${MOCK_TOOL_LOG:?}"
 exit 0
 MOCKJ
 cat > "${mock_sign_bin}/keytool" <<'MOCKK'
 #!/usr/bin/env bash
-printf '%s\n' '         SHA256: 11:22'
+printf '%s\n' "         SHA256: ${MOCK_ANDROID_SIGNED_CERT:?}"
 MOCKK
 cat > "${mock_sign_bin}/bundletool" <<'MOCKB'
 #!/usr/bin/env bash
@@ -337,10 +423,15 @@ MOCKB
 chmod +x "${mock_sign_bin}/jarsigner" "${mock_sign_bin}/keytool" "${mock_sign_bin}/bundletool"
 printf 'dummy-aab' > "${TMPDIR}/unsigned.aab"
 aab_spec="${TMPDIR}/aab-spec.json"
-jq '.targets = ["aab"] | .config.android.versionName = "1.2.3" | .config.android.versionCode = "7"' "$FIXTURE" > "$aab_spec"
+jq '.targets = ["aab"] | .config.app.applicationId = "com.example.contract" | .config.app.versionName = "1.2.3" | .config.app.versionCode = 7' "$FIXTURE" > "$aab_spec"
 aab_hash="$(compute_spec_hash "$aab_spec")"
 jq --arg h "$aab_hash" '.specHash = $h' "$aab_spec" > "${TMPDIR}/aab-spec-hashed.json"
+rm -f "$sign_payload"
 if PATH="${mock_sign_bin}:${PATH}" \
+  MOCK_ANDROID_CERT="$android_cert" \
+  MOCK_ANDROID_SIGNED_CERT="$signed_android_cert" \
+  MOCK_SIGN_PAYLOAD="$sign_payload" \
+  MOCK_TOOL_LOG="$tool_log" \
   COSMOS_BUILD_SIGN_MATERIAL_URL="https://example.test/internal" \
   COSMOS_BUILD_CREDENTIAL="test-credential" \
   BUILD_RUN_ID="run-contract-test" \
@@ -351,6 +442,238 @@ if PATH="${mock_sign_bin}:${PATH}" \
   log "expected AAB fingerprint mismatch"
   exit 1
 fi
+if [[ -f "$sign_payload" || -f "${TMPDIR}/signed.aab" ]]; then
+  log "AAB fingerprint mismatch left a receipt or bundle"
+  exit 1
+fi
+: > "$tool_log"
+if PATH="${mock_sign_bin}:${PATH}" \
+  MOCK_ANDROID_CERT="" \
+  MOCK_ANDROID_SIGNED_CERT="$signed_android_cert" \
+  MOCK_SIGN_PAYLOAD="$sign_payload" \
+  MOCK_TOOL_LOG="$tool_log" \
+  COSMOS_BUILD_SIGN_MATERIAL_URL="https://example.test/internal" \
+  COSMOS_BUILD_CALLBACK_URL="https://example.test/callback" \
+  COSMOS_BUILD_CREDENTIAL="test-credential" \
+  BUILD_RUN_ID="run-contract-test" \
+  "${ROOT_DIR}/scripts/sign-aab" \
+    --spec "${TMPDIR}/aab-spec-hashed.json" \
+    --input "${TMPDIR}/unsigned.aab" \
+    --output "${TMPDIR}/empty-cert.aab"; then
+  log "sign-aab accepted an empty certificate"
+  exit 1
+fi
+if [[ -f "${TMPDIR}/empty-cert.aab" || -f "$sign_payload" ]] || grep -q jarsigner "$tool_log"; then
+  log "empty AAB certificate still signed or posted a receipt"
+  exit 1
+fi
+
+log "contract: ios build refuses signing material and sign-ios fails closed"
+ios_spec="${TMPDIR}/ios-spec.json"
+jq '.platform = "ios" | .targets = ["ipa"] | .config.app.bundleId = "com.example.contract" | .config.app.versionName = "1.2.3" | .config.app.versionCode = 7' "$FIXTURE" > "$ios_spec"
+ios_hash="$(compute_spec_hash "$ios_spec")"
+jq --arg h "$ios_hash" '.specHash = $h' "$ios_spec" > "${TMPDIR}/ios-spec-hashed.json"
+if IOS_CERTIFICATE_PASSWORD=secret "${ROOT_DIR}/scripts/build-ios" \
+  --spec "${TMPDIR}/ios-spec-hashed.json" \
+  --workspace "${TMPDIR}/not-a-checkout" \
+  --output-dir "${TMPDIR}/ios-out"; then
+  log "build-ios accepted signing material"
+  exit 1
+fi
+if "${ROOT_DIR}/scripts/build-ios" --spec "$FIXTURE" --workspace "${TMPDIR}" --output-dir "${TMPDIR}/ios-out"; then
+  log "build-ios accepted an android spec"
+  exit 1
+fi
+if "${ROOT_DIR}/scripts/sign-ios" \
+  --spec "${TMPDIR}/ios-spec-hashed.json" \
+  --input "${TMPDIR}/../Runner.app" \
+  --output "${TMPDIR}/evil.ipa"; then
+  log "sign-ios accepted a traversal path"
+  exit 1
+fi
+
+ios_bin="${TMPDIR}/iosbin"
+mkdir -p "$ios_bin" "${TMPDIR}/Runner.app"
+python3 - "${TMPDIR}/Runner.app/Info.plist" <<'PY'
+import plistlib, sys
+plistlib.dump({
+    "CFBundleIdentifier": "com.example.contract",
+    "CFBundleShortVersionString": "1.2.3",
+    "CFBundleVersion": "7",
+}, open(sys.argv[1], "wb"))
+PY
+ios_cert="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+cat > "${ios_bin}/curl" <<'MOCKIOS'
+#!/usr/bin/env bash
+data=""
+prev=""
+for arg in "$@"; do
+  if [[ "$prev" == "--data-binary" ]]; then data="$arg"; fi
+  prev="$arg"
+done
+if [[ "$*" == *"ios-signing"* ]]; then
+  if [[ "${MOCK_IOS_MATERIAL:-full}" == "empty" ]]; then
+    printf '%s\n' '{}'
+    exit 0
+  fi
+  printf '%s\n' "${MOCK_IOS_MATERIAL_JSON:?}"
+  exit 0
+fi
+if [[ "$*" == *"sign-results"* ]]; then
+  printf '%s\n' "$data" > "${MOCK_SIGN_PAYLOAD:?}"
+  exit 0
+fi
+exit 1
+MOCKIOS
+cat > "${ios_bin}/openssl" <<'MOCKSSL'
+#!/usr/bin/env bash
+if [[ "$*" == *"-fingerprint"* ]]; then
+  printf 'SHA256 Fingerprint=%s\n' "$MOCK_IOS_FINGERPRINT"
+fi
+exit 0
+MOCKSSL
+cat > "${ios_bin}/security" <<'MOCKSEC'
+#!/usr/bin/env python3
+import datetime, os, plistlib, sys
+args = sys.argv[1:]
+log = os.environ.get("MOCK_SECURITY_LOG")
+if log:
+    with open(log, "a", encoding="utf-8") as handle:
+        handle.write(" ".join(args) + "\n")
+if args[:1] == ["cms"]:
+    plistlib.dump({
+        "Name": os.environ.get("MOCK_PROFILE_NAME", "Release"),
+        "TeamIdentifier": [os.environ["MOCK_IOS_TEAM"]],
+        "ExpirationDate": datetime.datetime(2099, 1, 1, tzinfo=datetime.timezone.utc),
+        "Entitlements": {"application-identifier": os.environ["MOCK_IOS_TEAM"] + ".com.example.contract"},
+    }, sys.stdout.buffer)
+elif args[:1] == ["find-identity"]:
+    identity = os.environ["MOCK_IOS_IDENTITY"]
+    sys.stdout.write(f"  1) {identity} \"Imported Identity\"\n     1 valid identities found\n")
+raise SystemExit(0)
+MOCKSEC
+cat > "${ios_bin}/codesign" <<'MOCKCS'
+#!/usr/bin/env bash
+if [[ "$*" == *"--verify"* && "$*" != *"--sign"* ]]; then
+  exit 0
+fi
+sign=""
+prev=""
+keychain=0
+for arg in "$@"; do
+  if [[ "$prev" == "--sign" ]]; then sign="$arg"; fi
+  if [[ "$arg" == "--keychain" ]]; then keychain=1; fi
+  prev="$arg"
+done
+printf '%s\n' "$sign" > "${MOCK_CODESIGN_IDENTITY:?}"
+if [[ "$keychain" != 1 ]]; then
+  exit 1
+fi
+if [[ ! "$sign" =~ ^[0-9A-Fa-f]{40}$ ]]; then
+  exit 1
+fi
+if [[ "${sign,,}" == "${MOCK_IOS_FINGERPRINT,,}" ]]; then
+  exit 1
+fi
+if [[ "${sign,,}" != "${MOCK_IOS_IDENTITY,,}" ]]; then
+  exit 1
+fi
+exit 0
+MOCKCS
+cat > "${ios_bin}/zip" <<'MOCKZIP'
+#!/usr/bin/env bash
+out=""
+for arg in "$@"; do
+  case "$arg" in *.ipa) out="$arg" ;; esac
+done
+test -n "$out"
+printf 'ipa' > "$out"
+MOCKZIP
+chmod +x "${ios_bin}/curl" "${ios_bin}/openssl" "${ios_bin}/security" "${ios_bin}/codesign" "${ios_bin}/zip"
+material_json="$(jq -n --arg cert "$ios_cert" --arg p12 "$(printf p12 | base64)" --arg profile "$(printf profile | base64)" '{certificateP12Base64:$p12,certificatePassword:"pw",provisioningProfileBase64:$profile,teamId:"ABCDE12345",certificateSha256:$cert}')"
+if PATH="${ios_bin}:${PATH}" \
+  MOCK_IOS_MATERIAL=empty \
+  COSMOS_BUILD_SIGN_MATERIAL_URL="https://example.test/internal" \
+  COSMOS_BUILD_CREDENTIAL="test-credential" \
+  BUILD_RUN_ID="run-contract-test" \
+  "${ROOT_DIR}/scripts/sign-ios" \
+    --spec "${TMPDIR}/ios-spec-hashed.json" \
+    --input "${TMPDIR}/Runner.app" \
+    --output "${TMPDIR}/missing.ipa"; then
+  log "sign-ios accepted empty signing material"
+  exit 1
+fi
+if [[ -f "${TMPDIR}/missing.ipa" ]]; then
+  log "sign-ios wrote an IPA without signing material"
+  exit 1
+fi
+if PATH="${ios_bin}:${PATH}" \
+  MOCK_IOS_MATERIAL=full \
+  MOCK_IOS_MATERIAL_JSON="$material_json" \
+  MOCK_IOS_FINGERPRINT="$ios_cert" \
+  MOCK_IOS_IDENTITY="BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" \
+  MOCK_IOS_TEAM="ZZZZZZZZZZ" \
+  COSMOS_BUILD_SIGN_MATERIAL_URL="https://example.test/internal" \
+  COSMOS_BUILD_CREDENTIAL="test-credential" \
+  BUILD_RUN_ID="run-contract-test" \
+  "${ROOT_DIR}/scripts/sign-ios" \
+    --spec "${TMPDIR}/ios-spec-hashed.json" \
+    --input "${TMPDIR}/Runner.app" \
+    --output "${TMPDIR}/wrong-team.ipa"; then
+  log "sign-ios accepted a mismatched team"
+  exit 1
+fi
+sign_payload="${TMPDIR}/ios-sign-payload.json"
+ios_only="${TMPDIR}/ios-only-spec.json"
+jq 'del(.config.app) | .config.ios.bundleId = "com.example.contract" | .config.ios.versionName = "1.2.3" | .config.ios.versionCode = "7"' "${TMPDIR}/ios-spec-hashed.json" > "$ios_only"
+ios_only_hash="$(compute_spec_hash "$ios_only")"
+jq --arg h "$ios_only_hash" '.specHash = $h' "$ios_only" > "${TMPDIR}/ios-only-spec-hashed.json"
+if "${ROOT_DIR}/scripts/sign-ios" \
+  --spec "${TMPDIR}/ios-only-spec-hashed.json" \
+  --input "${TMPDIR}/Runner.app" \
+  --output "${TMPDIR}/ios-only.ipa"; then
+  log "sign-ios accepted config.ios instead of config.app"
+  exit 1
+fi
+string_ios="${TMPDIR}/ios-string-spec.json"
+jq '.config.app.versionCode = "7"' "${TMPDIR}/ios-spec-hashed.json" > "$string_ios"
+string_ios_hash="$(compute_spec_hash "$string_ios")"
+jq --arg h "$string_ios_hash" '.specHash = $h' "$string_ios" > "${TMPDIR}/ios-string-spec-hashed.json"
+if "${ROOT_DIR}/scripts/sign-ios" \
+  --spec "${TMPDIR}/ios-string-spec-hashed.json" \
+  --input "${TMPDIR}/Runner.app" \
+  --output "${TMPDIR}/ios-string.ipa"; then
+  log "sign-ios accepted a string versionCode"
+  exit 1
+fi
+ios_identity="BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+security_log="${TMPDIR}/security.log"
+codesign_identity="${TMPDIR}/codesign-identity.txt"
+: > "$security_log"
+rm -f "$sign_payload"
+PATH="${ios_bin}:${PATH}" \
+  MOCK_IOS_MATERIAL=full \
+  MOCK_IOS_MATERIAL_JSON="$material_json" \
+  MOCK_IOS_FINGERPRINT="$ios_cert" \
+  MOCK_IOS_IDENTITY="$ios_identity" \
+  MOCK_IOS_TEAM="ABCDE12345" \
+  MOCK_SIGN_PAYLOAD="$sign_payload" \
+  MOCK_SECURITY_LOG="$security_log" \
+  MOCK_CODESIGN_IDENTITY="$codesign_identity" \
+  COSMOS_BUILD_SIGN_MATERIAL_URL="https://example.test/internal" \
+  COSMOS_BUILD_CALLBACK_URL="https://example.test/callback" \
+  COSMOS_BUILD_CREDENTIAL="test-credential" \
+  BUILD_RUN_ID="run-contract-test" \
+  "${ROOT_DIR}/scripts/sign-ios" \
+    --spec "${TMPDIR}/ios-spec-hashed.json" \
+    --input "${TMPDIR}/Runner.app" \
+    --output "${TMPDIR}/signed.ipa"
+jq -e --arg cert "$ios_cert" '.target == "ipa" and .packageName == "com.example.contract" and .versionName == "1.2.3" and .versionCode == 7 and .certSha256 == $cert and (.sha256 | test("^[0-9a-f]{64}$"))' "$sign_payload" >/dev/null
+test -f "${TMPDIR}/signed.ipa"
+grep -q '^import ' "$security_log"
+grep -q '^find-identity ' "$security_log"
+grep -q '^delete-keychain ' "$security_log"
+test "$(cat "$codesign_identity")" = "$ios_identity"
 
 log "contract: sensitive workflows are pinned to an immutable SHA"
 # Default pull_request checkout is depth-1, so ancestor pin commits are absent and
@@ -375,6 +698,8 @@ names = [
     "reusable-prepare.yml",
     "reusable-sign-android.yml",
     "reusable-finalize-android.yml",
+    "reusable-sign-ios.yml",
+    "reusable-finalize-ios.yml",
 ]
 
 def git_hash(kind, payload):
