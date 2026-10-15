@@ -1,0 +1,119 @@
+name: Cosmos build prepare
+
+on:
+  workflow_call:
+    inputs:
+      build_run_id:
+        required: true
+        type: string
+    outputs:
+      platform:
+        description: Build platform from frozen spec
+        value: ${{ jobs.prepare.outputs.platform }}
+      targets:
+        description: Build targets JSON array
+        value: ${{ jobs.prepare.outputs.targets }}
+      repository:
+        description: Source repository slug
+        value: ${{ jobs.prepare.outputs.repository }}
+      source_commit:
+        description: Pinned source commit
+        value: ${{ jobs.prepare.outputs.source_commit }}
+      orion_commit:
+        description: Pinned Orion commit when present
+        value: ${{ jobs.prepare.outputs.orion_commit }}
+      application_id:
+        description: Android applicationId when present
+        value: ${{ jobs.prepare.outputs.application_id }}
+    secrets:
+      COSMOS_BUILD_AUTH_EXCHANGE_URL:
+        required: true
+      COSMOS_BUILD_SPEC_URL:
+        required: true
+      COSMOS_BUILD_CALLBACK_URL:
+        required: true
+      COSMOS_BUILD_REPOSITORY_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      platform: ${{ steps.meta.outputs.platform }}
+      targets: ${{ steps.meta.outputs.targets }}
+      repository: ${{ steps.meta.outputs.repository }}
+      source_commit: ${{ steps.meta.outputs.source_commit }}
+      orion_commit: ${{ steps.meta.outputs.orion_commit }}
+      application_id: ${{ steps.meta.outputs.application_id }}
+    env:
+      BUILD_RUN_ID: ${{ inputs.build_run_id }}
+      COSMOS_BUILD_AUTH_EXCHANGE_URL: ${{ secrets.COSMOS_BUILD_AUTH_EXCHANGE_URL }}
+      COSMOS_BUILD_SPEC_URL: ${{ secrets.COSMOS_BUILD_SPEC_URL }}
+      COSMOS_BUILD_CALLBACK_URL: ${{ secrets.COSMOS_BUILD_CALLBACK_URL }}
+      COSMOS_BUILD_REPOSITORY_TOKEN: ${{ secrets.COSMOS_BUILD_REPOSITORY_TOKEN }}
+    steps:
+      - name: Checkout runall
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Exchange OIDC for prepare credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$BUILD_RUN_ID"
+          test -n "${COSMOS_BUILD_AUTH_EXCHANGE_URL:-}"
+          ./scripts/exchange-build-credential --run-id "$BUILD_RUN_ID" --output-env "$GITHUB_ENV"
+
+      - name: Load frozen build spec
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/load-build-spec --output build-spec.json --run-id "$BUILD_RUN_ID"
+          echo "platform=$(jq -r .platform build-spec.json)" >> "$GITHUB_OUTPUT"
+          echo "targets=$(jq -c .targets build-spec.json)" >> "$GITHUB_OUTPUT"
+          echo "repository=$(jq -r .repository build-spec.json)" >> "$GITHUB_OUTPUT"
+          echo "source_commit=$(jq -r .sourceCommit build-spec.json)" >> "$GITHUB_OUTPUT"
+          echo "orion_commit=$(jq -r '.orionCommit // .config.orionCommit // empty' build-spec.json)" >> "$GITHUB_OUTPUT"
+          echo "application_id=$(jq -r '.config.android.applicationId // .config.applicationId // empty' build-spec.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout frozen source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p workspace
+          ./scripts/checkout-source --spec build-spec.json --workspace workspace
+
+      - name: Report running (prepare)
+        shell: bash
+        run: ./scripts/report-result --status running --phase prepare --run-id "$BUILD_RUN_ID"
+
+      - name: Upload build spec artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: build-spec-${{ inputs.build_run_id }}
+          path: build-spec.json
+          retention-days: 7
+
+      - name: Pack source workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          # upload-artifact drops .git; the compile job must still verify HEAD.
+          tar -cf source-workspace.tar -C workspace .
+
+      - name: Upload source workspace artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: source-workspace-${{ inputs.build_run_id }}
+          path: source-workspace.tar
+          retention-days: 1
+
+      - name: Report prepare failure
+        if: failure()
+        shell: bash
+        run: ./scripts/report-result --status failed --phase prepare --run-id "$BUILD_RUN_ID" --error-message "runall prepare failed" || true

@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# Sign unsigned AAB with platform-provided keystore (jarsigner; not apksigner).
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/common.sh
+source "${ROOT_DIR}/scripts/lib/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: sign-aab --spec <path> --input <aab> --output <aab> [options]
+
+Options:
+  --expected-fingerprint  SHA-256 cert fingerprint to verify after sign
+
+Environment (phase B): same as sign-android
+EOF
+}
+
+SPEC=""
+INPUT=""
+OUTPUT=""
+EXPECTED_FINGERPRINT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --spec) SPEC="$2"; shift 2 ;;
+    --input) INPUT="$2"; shift 2 ;;
+    --output) OUTPUT="$2"; shift 2 ;;
+    --expected-fingerprint) EXPECTED_FINGERPRINT="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) log "unknown argument: $1"; usage; exit 1 ;;
+  esac
+done
+
+assert_non_empty "--spec" "$SPEC"
+assert_non_empty "--input" "$INPUT"
+assert_non_empty "--output" "$OUTPUT"
+[[ -f "$INPUT" ]] || { log "input aab missing: $INPUT"; exit 1; }
+
+validate_build_spec_document "$SPEC"
+
+expected_version_name="$(json_get "$SPEC" '.config.android.versionName // empty')"
+expected_version_code="$(json_get "$SPEC" '.config.android.versionCode // empty')"
+
+tmpdir="$(mktemp -d)"
+cleanup() {
+  if [[ -n "${tmpdir:-}" && -d "$tmpdir" ]]; then
+    find "$tmpdir" -type f -exec rm -f {} \;
+    find "$tmpdir" -mindepth 1 -type d -exec rmdir {} \; 2>/dev/null || true
+    rmdir "$tmpdir" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+keystore="$tmpdir/keystore.jks"
+if [[ -n "${ANDROID_KEYSTORE_PATH:-}" ]]; then
+  cp "${ANDROID_KEYSTORE_PATH}" "$keystore"
+  ks_pass="${ANDROID_KEYSTORE_PASSWORD:-}"
+  alias_name="${ANDROID_KEY_ALIAS:-}"
+else
+  assert_non_empty "COSMOS_BUILD_SIGN_MATERIAL_URL" "${COSMOS_BUILD_SIGN_MATERIAL_URL:-}"
+  assert_non_empty "COSMOS_BUILD_CREDENTIAL" "${COSMOS_BUILD_CREDENTIAL:-}"
+  assert_non_empty "BUILD_RUN_ID" "${BUILD_RUN_ID:-}"
+  require_cmd curl
+  curl --fail-with-body -sS \
+    -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
+    "${COSMOS_BUILD_SIGN_MATERIAL_URL%/}/build-runs/${BUILD_RUN_ID}/android-signing" \
+    > "$tmpdir/material.json"
+  base64 -d <<< "$(jq -r '.keystoreBase64' "$tmpdir/material.json")" > "$keystore"
+  ks_pass="$(jq -r '.keystorePassword' "$tmpdir/material.json")"
+  alias_name="$(jq -r '.keyAlias' "$tmpdir/material.json")"
+  if [[ -z "$EXPECTED_FINGERPRINT" ]]; then
+    EXPECTED_FINGERPRINT="$(jq -r '.certificateSha256 // empty' "$tmpdir/material.json")"
+  fi
+fi
+
+assert_non_empty "keystore alias" "$alias_name"
+assert_non_empty "keystore password" "$ks_pass"
+
+require_cmd jarsigner
+cp "$INPUT" "$OUTPUT"
+jarsigner -sigalg SHA256withRSA -digestalg SHA-256 \
+  -keystore "$keystore" -storepass "$ks_pass" \
+  "$OUTPUT" "$alias_name"
+
+jarsigner -verify "$OUTPUT"
+
+if [[ -n "$expected_version_name" || -n "$expected_version_code" ]]; then
+  require_cmd bundletool
+  manifest="$(bundletool dump manifest --bundle="$OUTPUT")"
+  if [[ -n "$expected_version_name" ]]; then
+    vname="$(echo "$manifest" | sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' | head -1)"
+    if [[ "$vname" != "$expected_version_name" ]]; then
+      log "AAB versionName mismatch: got ${vname:-empty} expected $expected_version_name"
+      exit 1
+    fi
+  fi
+  if [[ -n "$expected_version_code" ]]; then
+    vcode="$(echo "$manifest" | sed -n 's/.*android:versionCode="\([^"]*\)".*/\1/p' | head -1)"
+    if [[ "$vcode" != "$expected_version_code" ]]; then
+      log "AAB versionCode mismatch: got ${vcode:-empty} expected $expected_version_code"
+      exit 1
+    fi
+  fi
+fi
+
+if [[ -n "$EXPECTED_FINGERPRINT" ]]; then
+  require_cmd keytool
+  fp="$(keytool -printcert -jarfile "$OUTPUT" | sed -n 's/^[[:space:]]*SHA256: //p' | head -1 | tr -d '[:space:]')"
+  want="${EXPECTED_FINGERPRINT#sha256:}"
+  want="${want//:/}"
+  got="${fp//:/}"
+  if [[ -z "$got" || "${got,,}" != "${want,,}" ]]; then
+    log "AAB certificate fingerprint mismatch"
+    exit 1
+  fi
+fi
+
+log "signed aab written to $OUTPUT"

@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Clone and pin source repository + optional Orion submodule at frozen SHAs.
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/common.sh
+source "${ROOT_DIR}/scripts/lib/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: checkout-source --spec <path> --workspace <dir>
+
+Environment:
+  COSMOS_BUILD_REPOSITORY_TOKEN  Optional token for private git clones (prepare job only)
+EOF
+}
+
+SPEC=""
+WORKSPACE=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --spec) SPEC="$2"; shift 2 ;;
+    --workspace) WORKSPACE="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) log "unknown argument: $1"; usage; exit 1 ;;
+  esac
+done
+
+assert_non_empty "--spec" "$SPEC"
+assert_non_empty "--workspace" "$WORKSPACE"
+validate_build_spec_document "$SPEC"
+
+repository="$(json_get "$SPEC" '.repository')"
+source_commit="$(json_get "$SPEC" '.sourceCommit')"
+orion_sha="$(json_get "$SPEC" '.orionCommit // .config.orionCommit // empty')"
+
+mkdir -p "$WORKSPACE"
+
+origin_url="https://github.com/${repository}.git"
+
+# Pass the clone token only as a per-command http.extraheader.
+# Never put it in the remote URL or git config.
+git_with_auth() {
+  if [[ -z "${COSMOS_BUILD_REPOSITORY_TOKEN:-}" ]]; then
+    git "$@"
+    return
+  fi
+  local basic
+  basic="$(printf 'x-access-token:%s' "$COSMOS_BUILD_REPOSITORY_TOKEN" | base64 | tr -d '\n')"
+  git -c "http.extraheader=AUTHORIZATION: basic ${basic}" "$@"
+}
+
+if [[ ! -d "${WORKSPACE}/.git" ]]; then
+  git init "$WORKSPACE"
+  git -C "$WORKSPACE" remote add origin "$origin_url"
+fi
+
+git -C "$WORKSPACE" remote set-url origin "$origin_url"
+if ! git_with_auth -C "$WORKSPACE" fetch --depth=1 origin "$source_commit"; then
+  log "source fetch failed"
+  exit 1
+fi
+git -C "$WORKSPACE" checkout --detach FETCH_HEAD
+actual_source="$(git -C "$WORKSPACE" rev-parse HEAD)"
+if [[ "$actual_source" != "$source_commit" ]]; then
+  log "source HEAD mismatch"
+  exit 1
+fi
+origin_actual="$(git -C "$WORKSPACE" remote get-url origin)"
+if [[ "$origin_actual" != "$origin_url" ]]; then
+  log "source remote URL is not the public https origin"
+  exit 1
+fi
+
+if [[ -n "$orion_sha" && -d "${WORKSPACE}/orion/.git" ]]; then
+  if ! git_with_auth -C "$WORKSPACE/orion" fetch --depth=1 origin "$orion_sha"; then
+    log "orion fetch failed"
+    exit 1
+  fi
+  git -C "$WORKSPACE/orion" checkout --detach FETCH_HEAD
+  actual_orion="$(git -C "$WORKSPACE/orion" rev-parse HEAD)"
+  if [[ "$actual_orion" != "$orion_sha" ]]; then
+    log "orion HEAD mismatch"
+    exit 1
+  fi
+fi
+
+log "source checkout ready at $source_commit"

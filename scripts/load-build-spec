@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Fetch frozen build spec (or read local file) and validate shape + optional hash.
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/common.sh
+source "${ROOT_DIR}/scripts/lib/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: load-build-spec --output <path> [--run-id <id>]
+
+Environment (phase B / production):
+  COSMOS_BUILD_SPEC_URL   Base URL for immutable spec documents
+  COSMOS_BUILD_CREDENTIAL Short-lived Cosmos credential (Bearer)
+  BUILD_RUN_ID            Platform build run id (required with URL mode)
+
+Environment (local / contract tests):
+  BUILD_SPEC_FILE         Read spec from this path instead of HTTP
+EOF
+}
+
+OUTPUT=""
+RUN_ID="${BUILD_RUN_ID:-}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output)
+      OUTPUT="$2"
+      shift 2
+      ;;
+    --run-id)
+      RUN_ID="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      log "unknown argument: $1"
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+assert_non_empty "--output" "$OUTPUT"
+
+if [[ -n "${BUILD_SPEC_FILE:-}" ]]; then
+  cp "${BUILD_SPEC_FILE}" "$OUTPUT"
+else
+  assert_non_empty "COSMOS_BUILD_SPEC_URL" "${COSMOS_BUILD_SPEC_URL:-}"
+  assert_non_empty "COSMOS_BUILD_CREDENTIAL" "${COSMOS_BUILD_CREDENTIAL:-}"
+  assert_non_empty "BUILD_RUN_ID" "$RUN_ID"
+  require_cmd curl
+  curl --fail-with-body --retry 3 \
+    -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
+    -H 'Accept: application/json' \
+    "${COSMOS_BUILD_SPEC_URL%/}/${RUN_ID}/spec" > "$OUTPUT"
+fi
+
+validate_build_spec_document "$OUTPUT" "$RUN_ID"
+
+if [[ -n "${EXPECTED_SPEC_HASH:-}" ]]; then
+  actual="$(json_get "$OUTPUT" '.specHash')"
+  if [[ "$actual" != "$EXPECTED_SPEC_HASH" ]]; then
+    log "specHash mismatch"
+    exit 1
+  fi
+fi
+
+log "build spec loaded and validated"

@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# Sign unsigned APK with platform-provided keystore material (phase B API or env).
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/common.sh
+source "${ROOT_DIR}/scripts/lib/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: sign-android --spec <path> --input <apk> --output <apk> [options]
+
+Options:
+  --expected-package   applicationId from spec
+  --expected-fingerprint  SHA-256 cert fingerprint to verify after sign
+
+Environment (phase B):
+  COSMOS_BUILD_CREDENTIAL
+  COSMOS_BUILD_SIGN_MATERIAL_URL
+  BUILD_RUN_ID
+
+Environment (local test):
+  ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+EOF
+}
+
+SPEC=""
+INPUT=""
+OUTPUT=""
+EXPECTED_PACKAGE=""
+EXPECTED_FINGERPRINT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --spec) SPEC="$2"; shift 2 ;;
+    --input) INPUT="$2"; shift 2 ;;
+    --output) OUTPUT="$2"; shift 2 ;;
+    --expected-package) EXPECTED_PACKAGE="$2"; shift 2 ;;
+    --expected-fingerprint) EXPECTED_FINGERPRINT="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) log "unknown argument: $1"; usage; exit 1 ;;
+  esac
+done
+
+assert_non_empty "--spec" "$SPEC"
+assert_non_empty "--input" "$INPUT"
+assert_non_empty "--output" "$OUTPUT"
+[[ -f "$INPUT" ]] || { log "input apk missing: $INPUT"; exit 1; }
+
+validate_build_spec_document "$SPEC"
+
+if [[ -z "$EXPECTED_PACKAGE" ]]; then
+  EXPECTED_PACKAGE="$(json_get "$SPEC" '.config.android.applicationId // .config.applicationId // empty')"
+fi
+
+expected_version_name="$(json_get "$SPEC" '.config.android.versionName // empty')"
+expected_version_code="$(json_get "$SPEC" '.config.android.versionCode // empty')"
+
+tmpdir="$(mktemp -d)"
+cleanup() {
+  if [[ -n "${tmpdir:-}" && -d "$tmpdir" ]]; then
+    find "$tmpdir" -type f -exec rm -f {} \;
+    find "$tmpdir" -mindepth 1 -type d -exec rmdir {} \; 2>/dev/null || true
+    rmdir "$tmpdir" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+keystore="$tmpdir/keystore.jks"
+if [[ -n "${ANDROID_KEYSTORE_PATH:-}" ]]; then
+  cp "${ANDROID_KEYSTORE_PATH}" "$keystore"
+  ks_pass="${ANDROID_KEYSTORE_PASSWORD:-}"
+  key_pass="${ANDROID_KEY_PASSWORD:-$ks_pass}"
+  alias_name="${ANDROID_KEY_ALIAS:-}"
+else
+  assert_non_empty "COSMOS_BUILD_SIGN_MATERIAL_URL" "${COSMOS_BUILD_SIGN_MATERIAL_URL:-}"
+  assert_non_empty "COSMOS_BUILD_CREDENTIAL" "${COSMOS_BUILD_CREDENTIAL:-}"
+  assert_non_empty "BUILD_RUN_ID" "${BUILD_RUN_ID:-}"
+  require_cmd curl
+  curl --fail-with-body -sS \
+    -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
+    "${COSMOS_BUILD_SIGN_MATERIAL_URL%/}/build-runs/${BUILD_RUN_ID}/android-signing" \
+    > "$tmpdir/material.json"
+  base64 -d <<< "$(jq -r '.keystoreBase64' "$tmpdir/material.json")" > "$keystore"
+  ks_pass="$(jq -r '.keystorePassword' "$tmpdir/material.json")"
+  key_pass="$(jq -r '.keyPassword // .keystorePassword' "$tmpdir/material.json")"
+  alias_name="$(jq -r '.keyAlias' "$tmpdir/material.json")"
+  if [[ -z "$EXPECTED_FINGERPRINT" ]]; then
+    EXPECTED_FINGERPRINT="$(jq -r '.certificateSha256 // empty' "$tmpdir/material.json")"
+  fi
+fi
+
+assert_non_empty "keystore alias" "$alias_name"
+assert_non_empty "keystore password" "$ks_pass"
+
+require_cmd zipalign
+require_cmd apksigner
+
+aligned="$tmpdir/aligned.apk"
+zipalign -f -p 4 "$INPUT" "$aligned"
+
+apksigner sign \
+  --ks "$keystore" \
+  --ks-pass "pass:${ks_pass}" \
+  --ks-key-alias "$alias_name" \
+  --key-pass "pass:${key_pass}" \
+  --out "$OUTPUT" \
+  "$aligned"
+
+apksigner verify --verbose "$OUTPUT"
+
+if [[ -n "$EXPECTED_PACKAGE" ]] || [[ -n "$expected_version_name" ]] || [[ -n "$expected_version_code" ]]; then
+  require_cmd aapt
+  badging="$(aapt dump badging "$OUTPUT")"
+  if [[ -n "$EXPECTED_PACKAGE" ]]; then
+    pkg="$(echo "$badging" | sed -n "s/package: name='\([^']*\)'.*/\1/p" | head -1)"
+    if [[ "$pkg" != "$EXPECTED_PACKAGE" ]]; then
+      log "package mismatch: got $pkg expected $EXPECTED_PACKAGE"
+      exit 1
+    fi
+  fi
+  if [[ -n "$expected_version_name" ]]; then
+    vname="$(echo "$badging" | sed -n "s/package: name='[^']*' versionCode='[^']*' versionName='\([^']*\)'.*/\1/p" | head -1)"
+    if [[ "$vname" != "$expected_version_name" ]]; then
+      log "versionName mismatch: got $vname expected $expected_version_name"
+      exit 1
+    fi
+  fi
+  if [[ -n "$expected_version_code" ]]; then
+    vcode="$(echo "$badging" | sed -n "s/package: name='[^']*' versionCode='\([^']*\)'.*/\1/p" | head -1)"
+    if [[ "$vcode" != "$expected_version_code" ]]; then
+      log "versionCode mismatch: got $vcode expected $expected_version_code"
+      exit 1
+    fi
+  fi
+fi
+
+if [[ -n "$EXPECTED_FINGERPRINT" ]]; then
+  fp="$(apksigner verify --print-certs "$OUTPUT" | sed -n 's/Signer #1 certificate SHA-256 digest: //p' | head -1 | tr -d '[:space:]')"
+  want="${EXPECTED_FINGERPRINT#sha256:}"
+  want="${want//:/}"
+  got="${fp//:/}"
+  if [[ "${got,,}" != "${want,,}" ]]; then
+    log "certificate fingerprint mismatch"
+    exit 1
+  fi
+fi
+
+log "signed apk written to $OUTPUT"

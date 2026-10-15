@@ -1,0 +1,21 @@
+{
+  "releaseId": 1,
+  "releaseRevisionId": 2,
+  "tenantId": 3,
+  "appId": 4,
+  "repository": "prtmax/orion",
+  "sourceCommit": "0000000000000000000000000000000000000001",
+  "platform": "android",
+  "targets": ["apk"],
+  "config": {
+    "android": {
+      "applicationId": "com.example.contract",
+      "note": "a&b<c>"
+    }
+  },
+  "releaseSnapshot": {
+    "name": "N"
+  },
+  "artifactPrefix": "apps/x",
+  "specHash": "sha256:ignored-by-canonical-payload"
+}
