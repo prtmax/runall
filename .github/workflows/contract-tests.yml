@@ -1,0 +1,32 @@
+name: runall contract tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout runall
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Syntax check scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/lib/common.sh
+          for script in scripts/*; do
+            [[ -f "$script" ]] && bash -n "$script"
+          done
+          bash -n scripts/tests/run-contract-tests.sh
+
+      - name: Run contract tests
+        shell: bash
+        run: ./scripts/tests/run-contract-tests.sh

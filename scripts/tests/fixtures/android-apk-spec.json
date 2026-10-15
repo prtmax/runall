@@ -1,0 +1,15 @@
+{
+  "id": "spec-contract-test",
+  "buildRunId": "run-contract-test",
+  "specHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "repository": "prtmax/orion",
+  "sourceCommit": "0000000000000000000000000000000000000001",
+  "orionCommit": "0000000000000000000000000000000000000002",
+  "platform": "android",
+  "targets": ["apk"],
+  "config": {
+    "android": {
+      "applicationId": "com.example.contract"
+    }
+  }
+}

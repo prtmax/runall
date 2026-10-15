@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Request presigned upload URLs and upload signed artifacts (phase B finalize).
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/common.sh
+source "${ROOT_DIR}/scripts/lib/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: upload-artifacts --spec <path> --artifact <file> --target <apk|aab> [options]
+
+Options:
+  --file-name   Object file name (default: basename of artifact)
+  --content-type  MIME type
+
+Environment:
+  COSMOS_BUILD_CREDENTIAL
+  COSMOS_BUILD_ARTIFACT_UPLOAD_URL
+  BUILD_RUN_ID
+EOF
+}
+
+SPEC=""
+ARTIFACT=""
+TARGET=""
+FILE_NAME=""
+CONTENT_TYPE=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --spec) SPEC="$2"; shift 2 ;;
+    --artifact) ARTIFACT="$2"; shift 2 ;;
+    --target) TARGET="$2"; shift 2 ;;
+    --file-name) FILE_NAME="$2"; shift 2 ;;
+    --content-type) CONTENT_TYPE="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) log "unknown argument: $1"; usage; exit 1 ;;
+  esac
+done
+
+assert_non_empty "--spec" "$SPEC"
+assert_non_empty "--artifact" "$ARTIFACT"
+assert_non_empty "--target" "$TARGET"
+[[ -f "$ARTIFACT" ]] || { log "artifact missing: $ARTIFACT"; exit 1; }
+
+validate_build_spec_document "$SPEC"
+
+case "$TARGET" in
+  apk|aab) ;;
+  *) log "unsupported target: $TARGET"; exit 1 ;;
+esac
+
+assert_non_empty "COSMOS_BUILD_CREDENTIAL" "${COSMOS_BUILD_CREDENTIAL:-}"
+assert_non_empty "COSMOS_BUILD_ARTIFACT_UPLOAD_URL" "${COSMOS_BUILD_ARTIFACT_UPLOAD_URL:-}"
+assert_non_empty "BUILD_RUN_ID" "${BUILD_RUN_ID:-}"
+
+require_cmd curl
+require_cmd jq
+
+if [[ -z "$FILE_NAME" ]]; then
+  FILE_NAME="$(basename "$ARTIFACT")"
+fi
+
+size="$(wc -c <"$ARTIFACT" | tr -d ' ')"
+digest="$(sha256_file "$ARTIFACT")"
+sha256="sha256:${digest}"
+
+if [[ -z "$CONTENT_TYPE" ]]; then
+  if [[ "$TARGET" == "apk" ]]; then
+    CONTENT_TYPE="application/vnd.android.package-archive"
+  else
+    CONTENT_TYPE="application/octet-stream"
+  fi
+fi
+
+upload_base="${COSMOS_BUILD_ARTIFACT_UPLOAD_URL%/}"
+url="${upload_base}/build-runs/${BUILD_RUN_ID}/artifact-uploads"
+
+response="$(curl --fail-with-body -sS -X POST \
+  -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
+  -H 'Content-Type: application/json' \
+  --data-binary "$(jq -n \
+    --arg target "$TARGET" \
+    --arg fileName "$FILE_NAME" \
+    --arg contentType "$CONTENT_TYPE" \
+    --argjson size "$size" \
+    --arg sha256 "$sha256" \
+    '{target: $target, fileName: $fileName, contentType: $contentType, size: $size, sha256: $sha256}')" \
+  "$url")"
+
+put_url="$(echo "$response" | jq -r '.uploadUrl // .presignedUrl // empty')"
+assert_non_empty "uploadUrl" "$put_url"
+
+headers_json="$(echo "$response" | jq -c '.uploadHeaders // {}')"
+curl_args=(-sS -X PUT --data-binary "@${ARTIFACT}")
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  curl_args+=(-H "$line")
+done < <(echo "$headers_json" | jq -r 'to_entries[] | "\(.key): \(.value)"')
+
+curl --fail-with-body "${curl_args[@]}" "$put_url"
+
+log "uploaded target=$TARGET file=$FILE_NAME size=$size"

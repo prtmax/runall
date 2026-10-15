@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Report attempt progress to Cosmos (phase B callback shape; legacy spec path supported).
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/common.sh
+source "${ROOT_DIR}/scripts/lib/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: report-result --status <running|succeeded|failed|cancelled> [options]
+
+Options:
+  --status          Terminal or in-progress status (required)
+  --phase           Optional phase name (prepare, build, sign, finalize)
+  --error-message   Failure detail (no secrets)
+  --run-id          Platform build run id (default: BUILD_RUN_ID env)
+
+Environment:
+  COSMOS_BUILD_CALLBACK_URL  Base callback URL (phase B: .../build-runs/{id}/events)
+  COSMOS_BUILD_CREDENTIAL    Bearer token for callback
+  BUILD_RUN_ID               Platform build run id
+  BUILD_SPEC_ID              Legacy: spec id when callback still uses build-spec path
+EOF
+}
+
+STATUS=""
+PHASE=""
+ERROR_MESSAGE=""
+RUN_ID="${BUILD_RUN_ID:-}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --status) STATUS="$2"; shift 2 ;;
+    --phase) PHASE="$2"; shift 2 ;;
+    --error-message) ERROR_MESSAGE="$2"; shift 2 ;;
+    --run-id) RUN_ID="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) log "unknown argument: $1"; usage; exit 1 ;;
+  esac
+done
+
+assert_non_empty "--status" "$STATUS"
+case "$STATUS" in
+  running|succeeded|failed|cancelled) ;;
+  *) log "invalid status: $STATUS"; exit 1 ;;
+esac
+
+assert_non_empty "COSMOS_BUILD_CREDENTIAL" "${COSMOS_BUILD_CREDENTIAL:-}"
+assert_non_empty "COSMOS_BUILD_CALLBACK_URL" "${COSMOS_BUILD_CALLBACK_URL:-}"
+
+require_cmd curl
+require_cmd jq
+
+external_run_id="${GITHUB_RUN_ID:-}"
+external_run_url=""
+if [[ -n "$external_run_id" && -n "${GITHUB_SERVER_URL:-}" && -n "${GITHUB_REPOSITORY:-}" ]]; then
+  external_run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${external_run_id}"
+fi
+
+payload="$(jq -n \
+  --arg status "$STATUS" \
+  --arg phase "$PHASE" \
+  --arg externalRunId "$external_run_id" \
+  --arg externalRunUrl "$external_run_url" \
+  --arg errorMessage "$ERROR_MESSAGE" \
+  --argjson runAttempt "${GITHUB_RUN_ATTEMPT:-1}" \
+  '{
+    status: $status,
+    externalRunId: (if $externalRunId == "" then null else $externalRunId end),
+    externalRunUrl: (if $externalRunUrl == "" then null else $externalRunUrl end),
+    runAttempt: $runAttempt
+  }
+  | if $phase != "" then . + {phase: $phase} else . end
+  | if $errorMessage != "" then . + {errorMessage: $errorMessage} else . end')"
+
+callback_url="${COSMOS_BUILD_CALLBACK_URL%/}"
+if [[ -n "$RUN_ID" ]]; then
+  url="${callback_url}/build-runs/${RUN_ID}/events"
+elif [[ -n "${BUILD_SPEC_ID:-}" ]]; then
+  url="${callback_url}/${BUILD_SPEC_ID}/events"
+else
+  log "BUILD_RUN_ID or BUILD_SPEC_ID required for callback URL"
+  exit 1
+fi
+
+curl --fail-with-body --retry 3 -X POST \
+  -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
+  -H 'Content-Type: application/json' \
+  --data-binary "$payload" \
+  "$url"
+
+log "reported status=$STATUS phase=${PHASE:-n/a}"
