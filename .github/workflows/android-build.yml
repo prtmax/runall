@@ -1,5 +1,7 @@
 name: Cosmos app build
 
+run-name: cosmos-build-${{ inputs.build_run_id }}
+
 on:
   workflow_dispatch:
     inputs:

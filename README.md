@@ -7,7 +7,8 @@ server and exposed to jobs only through short-lived Cosmos build credentials (OI
 
 ## Dispatch contract (phase B wiring)
 
-Trigger `.github/workflows/android-build.yml` with:
+The workflow run name is `cosmos-build-<build_run_id>` so Mercury can reconcile
+a dispatch that did not return a GitHub run id. Trigger `.github/workflows/android-build.yml` with:
 
 ```json
 {
