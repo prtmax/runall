@@ -99,11 +99,18 @@ jobs:
           path: build-spec.json
           retention-days: 7
 
+      - name: Pack source workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          # upload-artifact drops .git; the compile job must still verify HEAD.
+          tar -cf source-workspace.tar -C workspace .
+
       - name: Upload source workspace artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: source-workspace-${{ inputs.build_run_id }}
-          path: workspace/
+          path: source-workspace.tar
           retention-days: 1
 
       - name: Report prepare failure
