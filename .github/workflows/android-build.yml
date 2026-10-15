@@ -162,7 +162,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-sign-ios.yml@0000000000000000000000000000000000000000
+    uses: prtmax/runall/.github/workflows/reusable-sign-ios.yml@b1f6b78da96112e22bdd2625dba70072945ceb6e
     with:
       build_run_id: ${{ inputs.build_run_id }}
     secrets:
@@ -180,7 +180,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-finalize-ios.yml@0000000000000000000000000000000000000000
+    uses: prtmax/runall/.github/workflows/reusable-finalize-ios.yml@b1f6b78da96112e22bdd2625dba70072945ceb6e
     with:
       build_run_id: ${{ inputs.build_run_id }}
       upstream_result: ${{ needs.sign-ios.result == 'success' && 'success' || 'failure' }}

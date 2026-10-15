@@ -1,0 +1,15 @@
+tree 51269b0aa971480ecd79c91f79b5a6a3a4385953
+parent 40ca32d247af7d36eb7ee392cc47a86fa8af0cc4
+author 0xfe10 <0xfe10@proton.me> 1792096719 +0000
+committer 0xfe10 <0xfe10@proton.me> 1792096719 +0000
+gpgsig -----BEGIN SSH SIGNATURE-----
+ U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgdwYsAzDgJTlSC/8dOXaKyRU4qn
+ R7D8MCEB9Mn7ycMGQAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5
+ AAAAQDh8brZltxVpVBRRKdnyWHyI+ZFxrkO1QsPvpBB0GmL6MMUb7Qg8dwn0zyWOIUpO1T
+ +qA6jAhjuBaJJKsQ0spAs=
+ -----END SSH SIGNATURE-----
+
+Add an unsigned iOS build and pinned IPA sign/finalize workflows.
+
+The compile job still has no OIDC permission. Signing fails closed without
+certificate material, and artifact uploads send the bare digest Mercury stores.
