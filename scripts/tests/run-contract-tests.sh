@@ -346,4 +346,27 @@ if PATH="${mock_sign_bin}:${PATH}" \
   exit 1
 fi
 
+log "contract: sensitive workflows are pinned to an immutable SHA"
+python3 - "${ROOT_DIR}" <<'PY'
+import pathlib, subprocess, sys
+root = pathlib.Path(sys.argv[1])
+text = (root / ".github/workflows/android-build.yml").read_text()
+names = [
+    "reusable-prepare.yml",
+    "reusable-sign-android.yml",
+    "reusable-finalize-android.yml",
+]
+for name in names:
+    marker = f"prtmax/runall/.github/workflows/{name}@"
+    if marker not in text:
+        raise SystemExit(f"missing SHA pin for {name}")
+    sha = text.split(marker, 1)[1].splitlines()[0].strip()
+    if len(sha) != 40 or any(ch not in "0123456789abcdef" for ch in sha):
+        raise SystemExit(f"pin for {name} is not a full SHA: {sha}")
+    pinned = subprocess.check_output(["git", "-C", str(root), "show", f"{sha}:.github/workflows/{name}"])
+    current = (root / ".github/workflows" / name).read_bytes()
+    if pinned != current:
+        raise SystemExit(f"pinned {name} does not match the file at HEAD")
+PY
+
 log "all contract tests passed"

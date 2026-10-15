@@ -17,7 +17,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: ./.github/workflows/reusable-prepare.yml
+    uses: prtmax/runall/.github/workflows/reusable-prepare.yml@71760a416d9b5161ae0a1aef8359a0af68b36a07
     with:
       build_run_id: ${{ inputs.build_run_id }}
     secrets:
@@ -75,7 +75,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: ./.github/workflows/reusable-sign-android.yml
+    uses: prtmax/runall/.github/workflows/reusable-sign-android.yml@71760a416d9b5161ae0a1aef8359a0af68b36a07
     with:
       build_run_id: ${{ inputs.build_run_id }}
       application_id: ${{ needs.prepare.outputs.application_id }}
@@ -94,7 +94,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: ./.github/workflows/reusable-finalize-android.yml
+    uses: prtmax/runall/.github/workflows/reusable-finalize-android.yml@71760a416d9b5161ae0a1aef8359a0af68b36a07
     with:
       build_run_id: ${{ inputs.build_run_id }}
       upstream_result: ${{ needs.sign-android.result == 'success' && 'success' || 'failure' }}

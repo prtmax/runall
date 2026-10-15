@@ -16,8 +16,10 @@ Trigger `.github/workflows/android-build.yml` with:
 }
 ```
 
-The dispatch workflow calls three fixed reusable workflows for the sensitive stages
-(`reusable-prepare.yml`, `reusable-sign-android.yml`, `reusable-finalize-android.yml`).
+The dispatch workflow calls three reusable workflows for the sensitive stages
+(`reusable-prepare.yml`, `reusable-sign-android.yml`, `reusable-finalize-android.yml`),
+each pinned to a full commit SHA. Update that pin in the same change that edits a
+sensitive workflow.
 The compile job is an ordinary job with `contents: read` only: no `id-token: write`,
 no repository token, and no signing material. Prepare checks out the frozen source
 and uploads that workspace. Finalize still runs when compile or sign fails so the
