@@ -1,0 +1,14 @@
+tree e183004d2eaac688bd2805b3fd89b618d655ab9a
+parent d7553cb0bb4a7119256bfa57169a15f3b912412f
+author 0xfe10 <0xfe10@proton.me> 1792059833 +0000
+committer 0xfe10 <0xfe10@proton.me> 1792059833 +0000
+gpgsig -----BEGIN SSH SIGNATURE-----
+ U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgdwYsAzDgJTlSC/8dOXaKyRU4qn
+ R7D8MCEB9Mn7ycMGQAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5
+ AAAAQDsZtGLZ8N4LIA2qgBDAauIdHIj8C8XgF8r0E0U0TWXs3o44uRPaQxEBJlHnoFmbZq
+ AyGUjeIxKuVyiYWoM5igU=
+ -----END SSH SIGNATURE-----
+
+fix: pack the prepared source tree so .git survives artifact upload
+
+upload-artifact omits .git directories. Prepare now uploads a tar of the frozen checkout, which the compile job can unpack before it checks HEAD.

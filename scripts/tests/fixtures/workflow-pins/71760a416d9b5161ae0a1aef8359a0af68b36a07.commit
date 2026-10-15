@@ -1,0 +1,14 @@
+tree 59300f22c637c856b410d8cf2da1aebe2caf8237
+parent b368946c64c942ed9567a33ceeaccc158710409f
+author 0xfe10 <0xfe10@proton.me> 1792059661 +0000
+committer 0xfe10 <0xfe10@proton.me> 1792059661 +0000
+gpgsig -----BEGIN SSH SIGNATURE-----
+ U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgdwYsAzDgJTlSC/8dOXaKyRU4qn
+ R7D8MCEB9Mn7ycMGQAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5
+ AAAAQH+EhipxPdGCTqOdADj8IiqPS+/03KAXduVHIRAgWQM3x/2qwx1cn5OVsV4SWW0RTs
+ Hgd17k808E4IcGj2asLwY=
+ -----END SSH SIGNATURE-----
+
+fix: separate unprivileged Android compile from pinned-stage workflows
+
+Move prepare, sign, and finalize into reusable workflows so OIDC stays off the compile job. Recompute the Mercury canonical spec hash, verify resource digests, sign AAB as well as APK, and report finalize failures when an upstream stage fails.

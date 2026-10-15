@@ -349,15 +349,64 @@ if PATH="${mock_sign_bin}:${PATH}" \
 fi
 
 log "contract: sensitive workflows are pinned to an immutable SHA"
-python3 - "${ROOT_DIR}" <<'PY'
+# Default pull_request checkout is depth-1, so ancestor pin commits are absent and
+# `git show <pin>:<path>` fails even though the workflow file exists at HEAD.
+# Prove each pin from checked-in commit objects and tree listings instead.
+SHALLOW="${TMPDIR}/depth1-checkout"
+git init -q "${SHALLOW}"
+git -C "${SHALLOW}" fetch --depth 1 "file://${ROOT_DIR}" HEAD
+git -C "${SHALLOW}" checkout -q --detach FETCH_HEAD
+if [[ "$(git -C "${SHALLOW}" rev-parse --is-shallow-repository)" != "true" ]]; then
+  log "expected the pin proof to run against a depth-1 checkout"
+  exit 1
+fi
+python3 - "${ROOT_DIR}" "${SHALLOW}" <<'PY'
 import pathlib, subprocess, sys
+
 root = pathlib.Path(sys.argv[1])
+shallow = pathlib.Path(sys.argv[2])
+fixdir = root / "scripts/tests/fixtures/workflow-pins"
 text = (root / ".github/workflows/android-build.yml").read_text()
 names = [
     "reusable-prepare.yml",
     "reusable-sign-android.yml",
     "reusable-finalize-android.yml",
 ]
+
+def git_hash(kind, payload):
+    proc = subprocess.run(
+        ["git", "-C", str(root), "hash-object", "-t", kind, "--stdin"],
+        input=payload,
+        stdout=subprocess.PIPE,
+        check=True,
+    )
+    return proc.stdout.decode().strip()
+
+def tree_payload(ls_text):
+    entries = []
+    for line in ls_text.splitlines():
+        if not line.strip():
+            continue
+        meta, name = line.split("\t", 1)
+        mode, _typ, sha = meta.split(" ")
+        # ls-tree prints 040000; the tree object stores 40000.
+        if mode == "040000":
+            mode = "40000"
+        entries.append((name, mode, bytes.fromhex(sha)))
+    entries.sort(key=lambda item: item[0] + ("/" if item[1] == "40000" else ""))
+    body = b""
+    for name, mode, sha in entries:
+        body += f"{mode} {name}".encode() + b"\0" + sha
+    return body
+
+def tree_entry(ls_text, wanted):
+    for line in ls_text.splitlines():
+        meta, name = line.split("\t", 1)
+        _mode, typ, sha = meta.split(" ")
+        if name == wanted:
+            return typ, sha
+    raise SystemExit(f"{wanted} missing from tree listing")
+
 for name in names:
     marker = f"prtmax/runall/.github/workflows/{name}@"
     if marker not in text:
@@ -365,9 +414,58 @@ for name in names:
     sha = text.split(marker, 1)[1].splitlines()[0].strip()
     if len(sha) != 40 or any(ch not in "0123456789abcdef" for ch in sha):
         raise SystemExit(f"pin for {name} is not a full SHA: {sha}")
-    pinned = subprocess.check_output(["git", "-C", str(root), "show", f"{sha}:.github/workflows/{name}"])
+
+    shown = subprocess.run(
+        ["git", "-C", str(shallow), "show", f"{sha}:.github/workflows/{name}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if shown.returncode == 0:
+        raise SystemExit(f"depth-1 checkout unexpectedly contained pin {sha}")
+    err = shown.stderr.decode(errors="replace")
+    if "exists on disk, but not in" not in err:
+        raise SystemExit(f"depth-1 pin lookup for {name} did not fail closed: {err}")
+
+    commit_path = fixdir / f"{sha}.commit"
+    if not commit_path.is_file():
+        raise SystemExit(f"missing commit fixture for {sha}")
+    commit = commit_path.read_bytes()
+    if git_hash("commit", commit) != sha:
+        raise SystemExit(f"commit fixture for {name} does not hash to {sha}")
+    local = subprocess.run(
+        ["git", "-C", str(root), "cat-file", "commit", sha],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if local.returncode == 0 and local.stdout != commit:
+        raise SystemExit(f"commit fixture for {sha} does not match the local object")
+
+    header = commit.splitlines()[0]
+    if not header.startswith(b"tree "):
+        raise SystemExit(f"commit fixture {sha} has no tree")
+    tree_sha = header.split()[1].decode()
+    for part in (".github", "workflows", name):
+        listing_path = fixdir / f"{tree_sha}.ls-tree"
+        if not listing_path.is_file():
+            raise SystemExit(f"missing tree fixture {tree_sha} for {name}")
+        listing = listing_path.read_text()
+        if git_hash("tree", tree_payload(listing)) != tree_sha:
+            raise SystemExit(f"tree fixture {tree_sha} does not hash to its name")
+        typ, found = tree_entry(listing, part)
+        if part == name:
+            if typ != "blob":
+                raise SystemExit(f"pinned {name} is not a blob")
+            blob_sha = found
+        else:
+            if typ != "tree":
+                raise SystemExit(f"{part} is not a tree while resolving {name}")
+            tree_sha = found
+
     current = (root / ".github/workflows" / name).read_bytes()
-    if pinned != current:
+    checked_out = (shallow / ".github/workflows" / name).read_bytes()
+    if checked_out != current:
+        raise SystemExit(f"depth-1 copy of {name} differs from HEAD")
+    if git_hash("blob", current) != blob_sha:
         raise SystemExit(f"pinned {name} does not match the file at HEAD")
 PY
 
