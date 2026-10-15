@@ -53,15 +53,20 @@ if [[ "$platform" != "ios" ]]; then
   exit 1
 fi
 
-bundle_id="$(json_get "$SPEC" '.config.app.bundleId // .config.ios.bundleId // empty')"
-expected_version_name="$(json_get "$SPEC" '.config.app.versionName // .config.ios.versionName // empty')"
-expected_version_code="$(json_get "$SPEC" '.config.app.versionCode // .config.ios.versionCode // empty')"
+bundle_id="$(json_get "$SPEC" '.config.app.bundleId // empty')"
+expected_version_name="$(json_get "$SPEC" '.config.app.versionName // empty')"
+expected_version_code="$(read_app_version_code "$SPEC")"
 assert_non_empty "bundle id" "$bundle_id"
 assert_non_empty "versionName" "$expected_version_name"
-assert_non_empty "versionCode" "$expected_version_code"
 
 tmpdir="$(mktemp -d)"
+keychain=""
+reported=0
 cleanup() {
+  if [[ -n "$keychain" ]]; then
+    security delete-keychain "$keychain" >/dev/null 2>&1 || true
+  fi
+  discard_unreported_output "$reported" "$OUTPUT" "$INPUT"
   if [[ -n "${tmpdir:-}" && -d "$tmpdir" ]]; then
     find "$tmpdir" -type f -exec rm -f {} \;
     find "$tmpdir" -mindepth 1 -type d -exec rmdir {} \; 2>/dev/null || true
@@ -111,6 +116,24 @@ if [[ "$got" != "$want" ]]; then
   log "iOS certificate fingerprint mismatch"
   exit 1
 fi
+
+# codesign identities are keychain names or SHA-1 hashes. The SHA-256
+# fingerprint checked above is not a signing identity.
+keychain="$tmpdir/signing.keychain-db"
+keychain_pass="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+security create-keychain -p "$keychain_pass" "$keychain"
+security set-keychain-settings -lut 600 "$keychain"
+security unlock-keychain -p "$keychain_pass" "$keychain"
+security import "$tmpdir/cert.p12" -k "$keychain" -P "$password" -f pkcs12 -T /usr/bin/codesign
+security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_pass" "$keychain"
+identity_text="$(security find-identity -p codesigning -v "$keychain")"
+identity="$(printf '%s\n' "$identity_text" | sed -n 's/^[[:space:]]*[0-9][0-9]*)[[:space:]]\([0-9A-Fa-f]\{40\}\)[[:space:]].*/\1/p')"
+identity="${identity%%$'\n'*}"
+if [[ ! "$identity" =~ ^[0-9A-Fa-f]{40}$ || "${identity,,}" == "$want" ]]; then
+  log "signing identity was not imported into the temporary keychain"
+  exit 1
+fi
+unset keychain_pass
 
 security cms -D -i "$tmpdir/profile.mobileprovision" > "$tmpdir/profile.plist"
 python3 - "$tmpdir/profile.plist" "$bundle_id" "$team_id" "$expected_version_name" "$expected_version_code" <<'PY'
@@ -162,9 +185,10 @@ if str(info.get("CFBundleShortVersionString", "")) != version_name:
 if str(info.get("CFBundleVersion", "")) != version_code:
     sys.exit("app build number mismatch")
 PY
-codesign --force --sign "$want" --timestamp=none "$tmpdir/Payload/$app_name"
+codesign --force --sign "$identity" --keychain "$keychain" --timestamp=none "$tmpdir/Payload/$app_name"
 codesign --verify --strict "$tmpdir/Payload/$app_name"
 (cd "$tmpdir" && zip -qr "$OUTPUT" Payload)
 [[ -f "$OUTPUT" ]] || { log "ipa was not written"; exit 1; }
 report_sign_result ipa "$bundle_id" "$expected_version_name" "$expected_version_code" "$want" "$OUTPUT"
+reported=1
 log "signed ipa written to $OUTPUT"

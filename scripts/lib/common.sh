@@ -141,14 +141,51 @@ normalize_sha256() {
   printf '%s' "$raw"
 }
 
+# Frozen specs store the package version on config.app, and versionCode is a
+# JSON number. A string, null, or config.ios copy is not a signing input.
+read_app_version_code() {
+  local file="$1" code
+  require_cmd jq
+  if ! code="$(jq -er 'if (.config.app.versionCode|type)=="number" then .config.app.versionCode else empty end' "$file")"; then
+    log "config.app.versionCode must be a JSON number"
+    exit 1
+  fi
+  if [[ ! "$code" =~ ^[0-9]+$ ]]; then
+    log "config.app.versionCode must be an integer"
+    exit 1
+  fi
+  printf '%s' "$code"
+}
+
+require_sign_receipt_fields() {
+  local package_name="$1" version_name="$2" version_code="$3" cert="$4"
+  assert_non_empty "sign package" "$package_name"
+  assert_non_empty "sign versionName" "$version_name"
+  if [[ ! "$version_code" =~ ^[0-9]+$ ]]; then
+    log "refusing sign receipt without an integer versionCode"
+    exit 1
+  fi
+  normalize_sha256 "$cert" >/dev/null
+}
+
+# A signed file without an accepted receipt is not a successful output.
+discard_unreported_output() {
+  local reported="$1" output="$2" input="${3:-}"
+  if [[ "$reported" == 1 || -z "$output" || ! -f "$output" ]]; then
+    return 0
+  fi
+  if [[ -n "$input" && "$output" == "$input" ]]; then
+    log "refusing to remove signed output that aliases the input"
+    return 0
+  fi
+  rm -f -- "$output"
+}
+
 # Record the signed file with the sign-stage credential. Finalize upload is
 # authorized only when this exact size and digest were stored.
 report_sign_result() {
   local target="$1" package_name="$2" version_name="$3" version_code="$4" cert="$5" artifact="$6"
-  assert_non_empty "sign package" "$package_name"
-  assert_non_empty "sign versionName" "$version_name"
-  assert_non_empty "sign versionCode" "$version_code"
-  assert_non_empty "sign certificate" "$cert"
+  require_sign_receipt_fields "$package_name" "$version_name" "$version_code" "$cert"
   assert_non_empty "COSMOS_BUILD_CALLBACK_URL" "${COSMOS_BUILD_CALLBACK_URL:-}"
   assert_non_empty "COSMOS_BUILD_CREDENTIAL" "${COSMOS_BUILD_CREDENTIAL:-}"
   assert_non_empty "BUILD_RUN_ID" "${BUILD_RUN_ID:-}"
