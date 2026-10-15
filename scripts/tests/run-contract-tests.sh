@@ -193,6 +193,10 @@ for name in ("reusable-prepare.yml", "reusable-sign-android.yml", "reusable-fina
         raise SystemExit(f"missing reusable workflow call: {name}")
 if "upstream_result" not in text:
     raise SystemExit("finalize is not wired to upstream failure")
+if "run-name: cosmos-build-${{ inputs.build_run_id }}" not in text:
+    raise SystemExit("dispatch run-name must include the platform build run id")
+if "build_spec_id" in text:
+    raise SystemExit("dispatch workflow still accepts build_spec_id")
 PY
 finalize="${ROOT_DIR}/.github/workflows/reusable-finalize-android.yml"
 grep -q "upstream_result != 'success'" "$finalize"
