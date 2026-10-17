@@ -1,23 +1,93 @@
 {
   "id": "spec-contract-test",
   "buildRunId": "run-contract-test",
+  "schemaVersion": "cosmos.release-build.v1",
+  "status": "ready",
   "releaseId": "1",
   "releaseRevisionId": "2",
   "tenantId": "3",
   "appId": "4",
-  "specHash": "sha256:cbb3e7eb43126f4274e03a19a618910aa12fc235fbabe9fb981a27e72395eb62",
   "repository": "prtmax/orion",
   "sourceCommit": "0000000000000000000000000000000000000001",
-  "orionCommit": "0000000000000000000000000000000000000002",
   "platform": "android",
   "targets": [
     "apk"
   ],
   "config": {
-    "android": {
-      "applicationId": "com.example.contract"
+    "orion": {
+      "commit": "0000000000000000000000000000000000000001",
+      "toolchainVersion": "3.47.2"
+    },
+    "app": {
+      "applicationId": "com.example.contract",
+      "bundleId": "com.example.contract",
+      "displayName": "Contract",
+      "versionName": "1.2.3",
+      "versionCode": 7
+    },
+    "release": {
+      "releaseId": "1",
+      "releaseRevisionId": "2",
+      "tenantId": "3",
+      "appId": "4",
+      "channel": "stable",
+      "version": "1.2.3",
+      "runtimeReleaseId": "14",
+      "snapshotDigest": "sha256:abababababababababababababababababababababababababababababababab",
+      "bundled": {
+        "appId": "4",
+        "channel": "stable",
+        "releaseId": "14",
+        "tenantId": "3"
+      },
+      "bundledDigest": "sha256:abababababababababababababababababababababababababababababababab"
+    },
+    "brandAssets": [
+      {
+        "kind": "logo",
+        "ref": "assets/logo.png",
+        "digest": "sha256:abababababababababababababababababababababababababababababababab"
+      }
+    ],
+    "environment": {
+      "name": "staging",
+      "releaseChannel": "stable",
+      "mercuryBaseUrl": "https://mercury.example.test",
+      "runtimeBaseUrl": "https://runtime.example.test",
+      "endpoints": [
+        {
+          "name": "mercury",
+          "url": "https://mercury.example.test",
+          "version": "v1",
+          "digest": "sha256:abababababababababababababababababababababababababababababababab"
+        }
+      ]
+    },
+    "languages": [
+      {
+        "locale": "zh-TW",
+        "ref": "i18n/zh-TW.ftl",
+        "digest": "sha256:abababababababababababababababababababababababababababababababab"
+      }
+    ],
+    "trust": {
+      "domain": "example.test",
+      "rootKeyId": "root-1",
+      "rootKeyVersion": 1,
+      "algorithm": "ed25519",
+      "publicKey": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+      "digest": "sha256:abababababababababababababababababababababababababababababababab"
+    },
+    "signing": {
+      "profileRef": "signing/profile-1",
+      "ready": true
     }
   },
-  "releaseSnapshot": {},
-  "artifactPrefix": ""
+  "releaseSnapshot": {
+    "releaseId": 1,
+    "version": "1.2.3"
+  },
+  "releaseSnapshotDigest": "sha256:abababababababababababababababababababababababababababababababab",
+  "artifactPrefix": "builds/contract",
+  "specHash": "sha256:272cbed7f8307eb9998957931ce036e5bd0994bae79adb1acb79bfcb28d9f04e"
 }

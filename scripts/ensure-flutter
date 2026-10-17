@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# Install the Flutter SDK pinned by the frozen spec and .fvmrc.
+# Compile jobs call this. It does not read Git credentials or signing material.
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/common.sh
+source "${ROOT_DIR}/scripts/lib/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: ensure-flutter --spec <path> --workspace <dir> --env-file <path>
+
+Writes RUNALL_FLUTTER and RUNALL_DART shell assignments for the pinned SDK.
+EOF
+}
+
+SPEC=""
+WORKSPACE=""
+ENV_FILE=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --spec) SPEC="$2"; shift 2 ;;
+    --workspace) WORKSPACE="$2"; shift 2 ;;
+    --env-file) ENV_FILE="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) log "unknown argument: $1"; usage; exit 1 ;;
+  esac
+done
+
+assert_non_empty "--spec" "$SPEC"
+assert_non_empty "--workspace" "$WORKSPACE"
+assert_non_empty "--env-file" "$ENV_FILE"
+validate_build_spec_document "$SPEC"
+
+pinned="$(json_get "$SPEC" '.config.orion.toolchainVersion')"
+assert_non_empty "config.orion.toolchainVersion" "$pinned"
+
+fvmrc=""
+if [[ -f "${WORKSPACE}/.fvmrc" ]]; then
+  fvmrc="${WORKSPACE}/.fvmrc"
+elif [[ -f "${WORKSPACE}/orion/.fvmrc" ]]; then
+  fvmrc="${WORKSPACE}/orion/.fvmrc"
+elif [[ -f "${WORKSPACE}/apps/rigel/.fvmrc" ]]; then
+  fvmrc="${WORKSPACE}/apps/rigel/.fvmrc"
+fi
+if [[ -n "$fvmrc" ]]; then
+  declared="$(jq -r '.flutter // empty' "$fvmrc")"
+  if [[ "$declared" != "$pinned" ]]; then
+    log ".fvmrc flutter does not match config.orion.toolchainVersion"
+    exit 1
+  fi
+fi
+
+install_fvm() {
+  if command -v fvm >/dev/null 2>&1; then
+    return 0
+  fi
+  export PATH="${PATH}:${HOME}/.pub-cache/bin:${HOME}/fvm/bin:${HOME}/.local/bin"
+  if command -v fvm >/dev/null 2>&1; then
+    return 0
+  fi
+  local installer
+  installer="$(mktemp)"
+  if [[ -n "${RUNALL_FVM_INSTALL_SCRIPT:-}" ]]; then
+    bash "${RUNALL_FVM_INSTALL_SCRIPT}"
+  else
+    require_cmd curl
+    curl -fsSL https://fvm.app/install.sh -o "$installer"
+    bash "$installer"
+  fi
+  rm -f "$installer"
+  export PATH="${PATH}:${HOME}/.pub-cache/bin:${HOME}/fvm/bin:${HOME}/.local/bin"
+  command -v fvm >/dev/null 2>&1 || {
+    log "fvm install did not produce a usable fvm command"
+    exit 1
+  }
+}
+
+resolve_pinned_binaries() {
+  local version="$1" root candidate
+  if [[ -n "${RUNALL_FLUTTER:-}" || -n "${RUNALL_DART:-}" ]]; then
+    [[ -x "${RUNALL_FLUTTER:-}" && -x "${RUNALL_DART:-}" ]] || {
+      log "RUNALL_FLUTTER and RUNALL_DART must both be executable when preset"
+      exit 1
+    }
+    printf '%s\n%s\n' "$RUNALL_FLUTTER" "$RUNALL_DART"
+    return 0
+  fi
+  install_fvm
+  fvm install "$version"
+  for root in "${FVM_CACHE_PATH:-}" "${HOME}/.fvm/versions" "${HOME}/fvm/versions"; do
+    [[ -n "$root" ]] || continue
+    candidate="${root%/}/${version}/bin/flutter"
+    if [[ -x "$candidate" && -x "${root%/}/${version}/bin/dart" ]]; then
+      printf '%s\n%s\n' "$candidate" "${root%/}/${version}/bin/dart"
+      return 0
+    fi
+  done
+  log "pinned Flutter SDK was not installed"
+  exit 1
+}
+
+mapfile -t bins < <(resolve_pinned_binaries "$pinned")
+flutter_bin="${bins[0]}"
+dart_bin="${bins[1]}"
+if ! "$flutter_bin" --version | grep -F "$pinned" >/dev/null; then
+  log "installed Flutter does not match config.orion.toolchainVersion"
+  exit 1
+fi
+
+mkdir -p "$(dirname "$ENV_FILE")"
+cat > "$ENV_FILE" <<EOF
+RUNALL_FLUTTER=$(printf '%q' "$flutter_bin")
+RUNALL_DART=$(printf '%q' "$dart_bin")
+EOF
+log "flutter toolchain ready at $pinned"

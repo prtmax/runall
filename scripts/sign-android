@@ -50,10 +50,10 @@ assert_non_empty "--output" "$OUTPUT"
 validate_build_spec_document "$SPEC"
 
 if [[ -z "$EXPECTED_PACKAGE" ]]; then
-  EXPECTED_PACKAGE="$(json_get "$SPEC" '.config.app.applicationId // .config.android.applicationId // .config.applicationId // empty')"
+  EXPECTED_PACKAGE="$(json_get "$SPEC" '.config.app.applicationId // empty')"
 fi
 
-expected_version_name="$(json_get "$SPEC" '.config.app.versionName // .config.android.versionName // empty')"
+expected_version_name="$(json_get "$SPEC" '.config.app.versionName // empty')"
 expected_version_code="$(read_app_version_code "$SPEC")"
 assert_non_empty "package name" "$EXPECTED_PACKAGE"
 assert_non_empty "versionName" "$expected_version_name"

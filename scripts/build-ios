@@ -5,6 +5,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib/common.sh
 source "${ROOT_DIR}/scripts/lib/common.sh"
+RUNALL_ROOT="$ROOT_DIR"
+# shellcheck source=scripts/lib/build_release.sh
+source "${ROOT_DIR}/scripts/lib/build_release.sh"
 
 usage() {
   cat <<'EOF'
@@ -31,68 +34,92 @@ done
 
 assert_non_empty "--spec" "$SPEC"
 assert_non_empty "--workspace" "$WORKSPACE"
-validate_build_spec_document "$SPEC"
+if [[ -n "${ANDROID_KEYSTORE_PATH:-}${IOS_CERTIFICATE_PASSWORD:-}${IOS_CERTIFICATE_P12:-}${IOS_PROVISIONING_PROFILE:-}${CODE_SIGN_IDENTITY:-}" ]]; then
+  log "build-ios refuses signing material"
+  exit 1
+fi
+
+OUTPUT_DIR="$(absolute_path "$OUTPUT_DIR")"
+mkdir -p "$OUTPUT_DIR"
+prepare_frozen_workspace "$SPEC" "$WORKSPACE"
 
 platform="$(json_get "$SPEC" '.platform')"
 if [[ "$platform" != "ios" ]]; then
   log "build-ios requires platform ios"
   exit 1
 fi
+bundle_id="$(json_get "$SPEC" '.config.app.bundleId')"
+display_name="$(json_get "$SPEC" '.config.app.displayName')"
+version_name="$(json_get "$SPEC" '.config.app.versionName')"
+version_code="$(read_app_version_code "$SPEC")"
+assert_non_empty "bundleId" "$bundle_id"
+assert_non_empty "displayName" "$display_name"
 
-if [[ -n "${ANDROID_KEYSTORE_PATH:-}${IOS_CERTIFICATE_PASSWORD:-}${IOS_CERTIFICATE_P12:-}${IOS_PROVISIONING_PROFILE:-}${CODE_SIGN_IDENTITY:-}" ]]; then
-  log "build-ios refuses signing material"
+info_plist="${APP_DIR}/ios/Runner/Info.plist"
+if [[ ! -f "$info_plist" ]]; then
+  log "ios Info.plist missing"
   exit 1
 fi
-
-source_commit="$(json_get "$SPEC" '.sourceCommit')"
-orion_sha="$(json_get "$SPEC" '.orionCommit // .config.orionCommit // empty')"
-
-mkdir -p "$OUTPUT_DIR"
-
-if [[ ! -d "${WORKSPACE}/.git" ]]; then
-  log "workspace is not a git checkout; run checkout-source in prepare"
-  exit 1
+python3 - "$info_plist" "$display_name" <<'PY'
+import plistlib, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+info = plistlib.loads(path.read_bytes())
+info["CFBundleDisplayName"] = sys.argv[2]
+info["CFBundleName"] = sys.argv[2]
+path.write_bytes(plistlib.dumps(info))
+PY
+release_xcconfig="${APP_DIR}/ios/Flutter/Release.xcconfig"
+if [[ -f "$release_xcconfig" ]]; then
+  python3 - "$release_xcconfig" "$bundle_id" <<'PY'
+import sys
+from pathlib import Path
+path, bundle = Path(sys.argv[1]), sys.argv[2]
+lines = []
+seen = False
+for line in path.read_text().splitlines():
+    if line.startswith("IOS_BUNDLE_ID="):
+        lines.append(f"IOS_BUNDLE_ID={bundle}")
+        seen = True
+    else:
+        lines.append(line)
+if not seen:
+    lines.append(f"IOS_BUNDLE_ID={bundle}")
+path.write_text("\n".join(lines) + "\n")
+PY
 fi
 
-actual_source="$(git -C "$WORKSPACE" rev-parse HEAD)"
-if [[ "$actual_source" != "$source_commit" ]]; then
-  log "workspace source commit mismatch"
-  exit 1
-fi
+gen_dir="${APP_DIR}/.runall/release-build"
+generate_frozen_release "$gen_dir"
+export IOS_BUNDLE_ID="$bundle_id"
+(cd "$APP_DIR" && "$RUNALL_FLUTTER" pub get)
+(cd "$APP_DIR" && "$RUNALL_FLUTTER" build ios --release --no-codesign \
+  --build-name "$version_name" --build-number "$version_code" \
+  --dart-define-from-file "$gen_dir/dart-defines.json")
 
-if [[ -n "$orion_sha" && -d "${WORKSPACE}/orion" ]]; then
-  actual_orion="$(git -C "$WORKSPACE/orion" rev-parse HEAD)"
-  if [[ "$actual_orion" != "$orion_sha" ]]; then
-    log "workspace orion commit mismatch"
-    exit 1
-  fi
-fi
-
-app_dir="$WORKSPACE"
-[[ -d "${WORKSPACE}/apps/rigel" ]] && app_dir="${WORKSPACE}/apps/rigel"
-
-if [[ -f "${WORKSPACE}/.fvmrc" ]] || [[ -f "${app_dir}/.fvmrc" ]]; then
-  require_cmd fvm
-  (cd "${app_dir}" && fvm install && fvm flutter --version)
-  FLUTTER_CMD=(fvm flutter)
-else
-  require_cmd flutter
-  FLUTTER_CMD=(flutter)
-fi
-
-cd "$app_dir"
-"${FLUTTER_CMD[@]}" pub get
-"${FLUTTER_CMD[@]}" build ios --release --no-codesign
-
-app_path=""
-while IFS= read -r candidate; do
-  app_path="$candidate"
-  break
-done < <(find build/ios/iphoneos -name 'Runner.app' -type d -print)
-if [[ -z "$app_path" || "$app_path" == *".."* ]]; then
+app_path="${APP_DIR}/build/ios/iphoneos/Runner.app"
+if [[ ! -d "$app_path" || -L "$app_path" ]]; then
   log "unsigned Runner.app missing"
   exit 1
 fi
-
-cp -R "$app_path" "${OUTPUT_DIR}/Runner.app"
-log "unsigned ios app in $OUTPUT_DIR"
+rm -rf "${OUTPUT_DIR}/Runner.app"
+cp -a "$app_path" "${OUTPUT_DIR}/Runner.app"
+python3 - "${OUTPUT_DIR}/Runner.app/Info.plist" "$bundle_id" "$display_name" "$version_name" "$version_code" <<'PY'
+import plistlib, sys
+from pathlib import Path
+info = plistlib.loads(Path(sys.argv[1]).read_bytes())
+bundle_id, display_name, version_name, version_code = sys.argv[2:]
+if info.get("CFBundleIdentifier") != bundle_id:
+    raise SystemExit("built app bundle id mismatch")
+if info.get("CFBundleDisplayName") != display_name:
+    raise SystemExit("built app display name mismatch")
+if str(info.get("CFBundleShortVersionString", "")) != version_name:
+    raise SystemExit("built app version mismatch")
+if str(info.get("CFBundleVersion", "")) != version_code:
+    raise SystemExit("built app build number mismatch")
+PY
+# upload-artifact does not preserve .app symlinks or modes. Pack them in tar.
+rm -f "${OUTPUT_DIR}/Runner.app.tar"
+tar -cf "${OUTPUT_DIR}/Runner.app.tar" -C "$OUTPUT_DIR" Runner.app
+rm -rf "${OUTPUT_DIR}/Runner.app"
+log "unsigned ios app archive in $OUTPUT_DIR"

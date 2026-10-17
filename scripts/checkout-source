@@ -33,11 +33,11 @@ validate_build_spec_document "$SPEC"
 
 repository="$(json_get "$SPEC" '.repository')"
 source_commit="$(json_get "$SPEC" '.sourceCommit')"
-orion_sha="$(json_get "$SPEC" '.orionCommit // .config.orionCommit // empty')"
+orion_sha="$(read_orion_commit "$SPEC")"
 
 mkdir -p "$WORKSPACE"
 
-origin_url="https://github.com/${repository}.git"
+origin_url="$(source_origin_url "$repository")"
 
 # Pass the clone token only as a per-command http.extraheader.
 # Never put it in the remote URL or git config.
@@ -73,17 +73,30 @@ if [[ "$origin_actual" != "$origin_url" ]]; then
   exit 1
 fi
 
-if [[ -n "$orion_sha" && -d "${WORKSPACE}/orion/.git" ]]; then
-  if ! git_with_auth -C "$WORKSPACE/orion" fetch --depth=1 origin "$orion_sha"; then
+if [[ -f "${WORKSPACE}/.gitmodules" ]] && grep -q 'submodule "orion"' "${WORKSPACE}/.gitmodules"; then
+  orion_url="$(git -C "$WORKSPACE" config -f .gitmodules --get submodule.orion.url)"
+  assert_non_empty "submodule.orion.url" "$orion_url"
+  if [[ "$orion_url" =~ ^[A-Za-z][A-Za-z0-9+.-]*:// ]] && [[ ! "$orion_url" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?$ ]]; then
+    log "orion submodule URL is not an https GitHub repository"
+    exit 1
+  fi
+  if [[ ! -e "${WORKSPACE}/orion/.git" ]]; then
+    mkdir -p "${WORKSPACE}/orion"
+    git init "${WORKSPACE}/orion"
+    git -C "${WORKSPACE}/orion" remote add origin "$orion_url"
+  fi
+  git -C "${WORKSPACE}/orion" remote set-url origin "$orion_url"
+  if ! git_with_auth -C "${WORKSPACE}/orion" fetch --depth=1 origin "$orion_sha"; then
     log "orion fetch failed"
     exit 1
   fi
-  git -C "$WORKSPACE/orion" checkout --detach FETCH_HEAD
-  actual_orion="$(git -C "$WORKSPACE/orion" rev-parse HEAD)"
+  git -C "${WORKSPACE}/orion" checkout --detach FETCH_HEAD
+  actual_orion="$(git -C "${WORKSPACE}/orion" rev-parse HEAD)"
   if [[ "$actual_orion" != "$orion_sha" ]]; then
     log "orion HEAD mismatch"
     exit 1
   fi
 fi
 
-log "source checkout ready at $source_commit"
+resolve_release_app_dir "$WORKSPACE" "$source_commit" "$orion_sha" >/dev/null
+log "source checkout ready at $source_commit orion $orion_sha"

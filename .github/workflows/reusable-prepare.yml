@@ -78,8 +78,8 @@ jobs:
           echo "targets=$(jq -c .targets build-spec.json)" >> "$GITHUB_OUTPUT"
           echo "repository=$(jq -r .repository build-spec.json)" >> "$GITHUB_OUTPUT"
           echo "source_commit=$(jq -r .sourceCommit build-spec.json)" >> "$GITHUB_OUTPUT"
-          echo "orion_commit=$(jq -r '.orionCommit // .config.orionCommit // empty' build-spec.json)" >> "$GITHUB_OUTPUT"
-          echo "application_id=$(jq -r '.config.android.applicationId // .config.applicationId // empty' build-spec.json)" >> "$GITHUB_OUTPUT"
+          echo "orion_commit=$(jq -r '.config.orion.commit // empty' build-spec.json)" >> "$GITHUB_OUTPUT"
+          echo "application_id=$(jq -r '.config.app.applicationId // empty' build-spec.json)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout frozen source tree
         shell: bash

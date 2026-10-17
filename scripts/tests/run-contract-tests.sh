@@ -32,7 +32,7 @@ fi
 
 log "contract: reject specHash that does not match canonical document"
 tampered="${TMPDIR}/tampered.json"
-jq '.config.android.applicationId = "com.example.tampered"' "$FIXTURE" > "$tampered"
+jq '.config.app.applicationId = "com.example.tampered"' "$FIXTURE" > "$tampered"
 if BUILD_SPEC_FILE="$tampered" "${ROOT_DIR}/scripts/load-build-spec" --output "${TMPDIR}/bad3.json" 2>/dev/null; then
   log "expected canonical specHash mismatch failure"
   exit 1
@@ -78,35 +78,57 @@ grep -q 'COSMOS_BUILD_CREDENTIAL=scoped-test-token' "$exchange_out"
 
 log "contract: upload-artifacts presign body shape (dry run)"
 upload_payload="${TMPDIR}/upload-payload.json"
-touch "${TMPDIR}/fake.apk"
+printf 'fake-apk' > "${TMPDIR}/fake.apk"
 export COSMOS_BUILD_ARTIFACT_UPLOAD_URL="https://example.test/internal"
 export COSMOS_BUILD_CREDENTIAL="test-credential"
 export BUILD_RUN_ID="run-contract-test"
+complete_payload="${TMPDIR}/complete-payload.json"
 cat > "${mock_bin2}/curl" <<'MOCK3'
 #!/usr/bin/env bash
-if [[ "${1:-}" == "--fail-with-body" ]]; then
-  shift
-fi
-while [[ $# -gt 0 ]]; do
-  if [[ "$1" == "--data-binary" ]]; then
-    echo "$2" > "${MOCK_UPLOAD_PAYLOAD:?}"
-    echo '{"uploadUrl":"https://example.test/put","uploadHeaders":{}}'
-    exit 0
-  fi
-  if [[ "$1" == "-X" && "${2:-}" == "PUT" ]]; then
-    exit 0
-  fi
-  shift
+args=("$@")
+joined="$*"
+data=""
+prev=""
+for arg in "${args[@]}"; do
+  if [[ "$prev" == "--data-binary" ]]; then data="$arg"; fi
+  prev="$arg"
 done
+if [[ "$joined" == *" -X PUT "* || "$joined" == *" -X PUT" ]]; then
+  printf 'put
+' >> "${MOCK_UPLOAD_LOG:?}"
+  exit 0
+fi
+if [[ "$joined" == *"/complete"* ]]; then
+  printf '%s
+' "$data" > "${MOCK_COMPLETE_PAYLOAD:?}"
+  printf '{}
+'
+  exit 0
+fi
+if [[ -n "$data" ]]; then
+  printf '%s
+' "$data" > "${MOCK_UPLOAD_PAYLOAD:?}"
+  size=$(wc -c < "${MOCK_UPLOAD_ARTIFACT:?}" | tr -d ' ')
+  digest=$(sha256sum "${MOCK_UPLOAD_ARTIFACT}" | awk '{print $1}')
+  printf '{"url":"https://example.test/put","method":"PUT","objectKey":"builds/contract/apk/%s/fake.apk","fileName":"fake.apk","contentType":"application/vnd.android.package-archive","byteSize":%s,"sha256":"%s","target":"apk","headers":{}}
+' "$digest" "$size" "$digest"
+  exit 0
+fi
 exit 1
 MOCK3
 chmod +x "${mock_bin2}/curl"
 export MOCK_UPLOAD_PAYLOAD="${upload_payload}"
+export MOCK_UPLOAD_ARTIFACT="${TMPDIR}/fake.apk"
+export MOCK_COMPLETE_PAYLOAD="${complete_payload}"
+export MOCK_UPLOAD_LOG="${TMPDIR}/upload.log"
+: > "$MOCK_UPLOAD_LOG"
 "${ROOT_DIR}/scripts/upload-artifacts" \
   --spec "${TMPDIR}/spec.json" \
   --artifact "${TMPDIR}/fake.apk" \
   --target apk
-jq -e '.target == "apk" and .fileName == "fake.apk" and (.sha256 | test("^[0-9a-f]{64}$"))' "$upload_payload" >/dev/null
+jq -e '.target == "apk" and .fileName == "fake.apk" and .byteSize > 0 and (.sha256 | test("^[0-9a-f]{64}$")) and (.size | not)' "$upload_payload" >/dev/null
+jq -e --slurpfile auth "$upload_payload" '.target == "apk" and .objectKey == ("builds/contract/apk/" + $auth[0].sha256 + "/fake.apk") and .byteSize == $auth[0].byteSize and .sha256 == $auth[0].sha256' "$complete_payload" >/dev/null
+grep -q put "$MOCK_UPLOAD_LOG"
 
 log "contract: report-result payload shape (dry run)"
 export COSMOS_BUILD_CALLBACK_URL="https://example.test/callback"
@@ -139,13 +161,43 @@ export MOCK_PAYLOAD_OUT="${payload_file}"
 "${ROOT_DIR}/scripts/report-result" --status running --phase prepare --run-id run-contract-test
 jq -e '.status == "running" and .phase == "prepare" and .externalRunId == "12345"' "$payload_file" >/dev/null
 
-log "contract: Go encoding/json canonical vector"
-escape_fixture="${ROOT_DIR}/scripts/tests/fixtures/canonical-escape-vector.json"
-escape_hash="$(compute_spec_hash "$escape_fixture")"
-if [[ "$escape_hash" != "sha256:eccff365dad1e93912b6af42098efb347d871fab5d1a25c467d4edb6829f801d" ]]; then
-  log "canonical vector mismatch: $escape_hash"
+log "contract: Go/Orion v1 canonical vector"
+orion_fixture="${ROOT_DIR}/scripts/tests/fixtures/orion-v1-vector.json"
+orion_hash="$(compute_spec_hash "$orion_fixture")"
+if [[ "$orion_hash" != "sha256:0ef043419d2de6704241f6b0809f17f4776ce9c1687ebf1adb7c8a49c11b48da" ]]; then
+  log "canonical vector mismatch: $orion_hash"
   exit 1
 fi
+python3 - "$orion_fixture" <<'PY'
+import importlib.util, json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("spec_hash", root.parents[2] / "lib" / "spec_hash.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+doc = json.loads(root.read_text())
+reordered = json.loads(root.read_text())
+bundled = reordered["config"]["release"]["bundled"]
+reordered["config"]["release"]["bundled"] = {key: bundled[key] for key in reversed(list(bundled))}
+reordered["targets"] = ["apk", "aab", "apk"]
+reordered["releaseSnapshot"] = {"tampered": True}
+if module.canonical_bytes(reordered) != module.canonical_bytes(doc):
+    raise SystemExit("normalization changed the v1 payload")
+reordered["config"]["app"]["versionCode"] = 9007199254740994
+if module.canonical_bytes(reordered) == module.canonical_bytes(doc):
+    raise SystemExit("large integer tamper was ignored")
+reordered = json.loads(root.read_text())
+reordered["releaseSnapshotDigest"] = "sha256:" + "ab" * 32
+if module.canonical_bytes(reordered) == module.canonical_bytes(doc):
+    raise SystemExit("snapshot digest tamper was ignored")
+try:
+    bad = json.loads(root.read_text())
+    bad["config"]["app"]["versionCode"] = "7"
+    module.canonical_bytes(bad)
+except SystemExit:
+    pass
+else:
+    raise SystemExit("string versionCode was accepted")
+PY
 
 log "contract: resource digest is recomputed"
 resource_root="${TMPDIR}/resources"
@@ -230,6 +282,11 @@ if [[ "$*" == *"http.extraheader"* && "$*" == *"x-access-token:super-secret-toke
 fi
 if [[ "$1" == "init" ]]; then
   mkdir -p "$2/.git"
+  exit 0
+fi
+if [[ "$1" == "-C" && "$3" == "checkout" ]]; then
+  mkdir -p "$2/apps/rigel/tool"
+  touch "$2/apps/rigel/tool/generate_release_build.dart"
   exit 0
 fi
 if [[ "$*" == *"rev-parse HEAD"* ]]; then
@@ -383,8 +440,10 @@ fi
 log "contract: sign-android refuses a string versionCode"
 string_spec="${TMPDIR}/string-version-spec.json"
 jq '.config.app.versionCode = "7"' "${TMPDIR}/signed-spec-hashed.json" > "$string_spec"
-string_hash="$(compute_spec_hash "$string_spec")"
-jq --arg h "$string_hash" '.specHash = $h' "$string_spec" > "${TMPDIR}/string-version-spec-hashed.json"
+if compute_spec_hash "$string_spec" >/dev/null; then
+  log "string versionCode was treated as canonical"
+  exit 1
+fi
 if PATH="${mock_sign_bin}:${PATH}" \
   MOCK_ANDROID_CERT="$android_cert" \
   MOCK_ANDROID_SIGNED_CERT="$android_cert" \
@@ -394,7 +453,7 @@ if PATH="${mock_sign_bin}:${PATH}" \
   COSMOS_BUILD_CREDENTIAL="test-credential" \
   BUILD_RUN_ID="run-contract-test" \
   "${ROOT_DIR}/scripts/sign-android" \
-    --spec "${TMPDIR}/string-version-spec-hashed.json" \
+    --spec "$string_spec" \
     --input "${TMPDIR}/unsigned.apk" \
     --output "${TMPDIR}/string.apk" \
     --expected-package "com.example.contract"; then
@@ -554,6 +613,9 @@ raise SystemExit(0)
 MOCKSEC
 cat > "${ios_bin}/codesign" <<'MOCKCS'
 #!/usr/bin/env bash
+if [[ -n "${MOCK_CODESIGN_LOG:-}" ]]; then
+  printf '%s\n' "$*" >> "$MOCK_CODESIGN_LOG"
+fi
 if [[ "$*" == *"--verify"* && "$*" != *"--sign"* ]]; then
   exit 0
 fi
@@ -626,10 +688,12 @@ fi
 sign_payload="${TMPDIR}/ios-sign-payload.json"
 ios_only="${TMPDIR}/ios-only-spec.json"
 jq 'del(.config.app) | .config.ios.bundleId = "com.example.contract" | .config.ios.versionName = "1.2.3" | .config.ios.versionCode = "7"' "${TMPDIR}/ios-spec-hashed.json" > "$ios_only"
-ios_only_hash="$(compute_spec_hash "$ios_only")"
-jq --arg h "$ios_only_hash" '.specHash = $h' "$ios_only" > "${TMPDIR}/ios-only-spec-hashed.json"
+if compute_spec_hash "$ios_only" >/dev/null; then
+  log "config.ios was treated as canonical"
+  exit 1
+fi
 if "${ROOT_DIR}/scripts/sign-ios" \
-  --spec "${TMPDIR}/ios-only-spec-hashed.json" \
+  --spec "$ios_only" \
   --input "${TMPDIR}/Runner.app" \
   --output "${TMPDIR}/ios-only.ipa"; then
   log "sign-ios accepted config.ios instead of config.app"
@@ -637,10 +701,12 @@ if "${ROOT_DIR}/scripts/sign-ios" \
 fi
 string_ios="${TMPDIR}/ios-string-spec.json"
 jq '.config.app.versionCode = "7"' "${TMPDIR}/ios-spec-hashed.json" > "$string_ios"
-string_ios_hash="$(compute_spec_hash "$string_ios")"
-jq --arg h "$string_ios_hash" '.specHash = $h' "$string_ios" > "${TMPDIR}/ios-string-spec-hashed.json"
+if compute_spec_hash "$string_ios" >/dev/null; then
+  log "ios string versionCode was treated as canonical"
+  exit 1
+fi
 if "${ROOT_DIR}/scripts/sign-ios" \
-  --spec "${TMPDIR}/ios-string-spec-hashed.json" \
+  --spec "$string_ios" \
   --input "${TMPDIR}/Runner.app" \
   --output "${TMPDIR}/ios-string.ipa"; then
   log "sign-ios accepted a string versionCode"
@@ -649,7 +715,13 @@ fi
 ios_identity="BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
 security_log="${TMPDIR}/security.log"
 codesign_identity="${TMPDIR}/codesign-identity.txt"
+codesign_log="${TMPDIR}/codesign.log"
+mkdir -p "${TMPDIR}/Runner.app/Frameworks/Demo.framework"
+printf 'framework' > "${TMPDIR}/Runner.app/Frameworks/Demo.framework/Demo"
+ln -sfn Demo "${TMPDIR}/Runner.app/Frameworks/Demo.framework/DemoLink"
+chmod 755 "${TMPDIR}/Runner.app/Frameworks/Demo.framework/Demo"
 : > "$security_log"
+: > "$codesign_log"
 rm -f "$sign_payload"
 PATH="${ios_bin}:${PATH}" \
   MOCK_IOS_MATERIAL=full \
@@ -660,6 +732,7 @@ PATH="${ios_bin}:${PATH}" \
   MOCK_SIGN_PAYLOAD="$sign_payload" \
   MOCK_SECURITY_LOG="$security_log" \
   MOCK_CODESIGN_IDENTITY="$codesign_identity" \
+  MOCK_CODESIGN_LOG="$codesign_log" \
   COSMOS_BUILD_SIGN_MATERIAL_URL="https://example.test/internal" \
   COSMOS_BUILD_CALLBACK_URL="https://example.test/callback" \
   COSMOS_BUILD_CREDENTIAL="test-credential" \
@@ -674,6 +747,299 @@ grep -q '^import ' "$security_log"
 grep -q '^find-identity ' "$security_log"
 grep -q '^delete-keychain ' "$security_log"
 test "$(cat "$codesign_identity")" = "$ios_identity"
+grep -q 'Frameworks/Demo.framework' "$codesign_log"
+grep -q -- '--entitlements' "$codesign_log"
+framework_line="$(grep -n 'Frameworks/Demo.framework' "$codesign_log" | head -1 | cut -d: -f1)"
+entitlement_line="$(grep -n -- '--entitlements' "$codesign_log" | head -1 | cut -d: -f1)"
+if [[ "$framework_line" -ge "$entitlement_line" ]]; then
+  log "nested code was not signed before the outer app"
+  exit 1
+fi
+
+log "contract: source layout, absolute outputs, upload failures"
+unset RUNALL_FLUTTER RUNALL_DART || true
+layout_root="${TMPDIR}/layout"
+mkdir -p "$layout_root"
+git -C "$layout_root" init -q
+git -C "$layout_root" config commit.gpgsign false
+git -C "$layout_root" config user.email test@example.invalid
+git -C "$layout_root" config user.name contract
+mkdir -p "$layout_root/apps/rigel/tool" "$layout_root/apps/rigel/ios/Runner" "$layout_root/apps/rigel/ios/Flutter" "$layout_root/apps/rigel/assets/releases"
+printf 'generator\n' > "$layout_root/apps/rigel/tool/generate_release_build.dart"
+printf '{ "flutter": "3.47.2" }\n' > "$layout_root/.fvmrc"
+printf 'IOS_BUNDLE_ID=com.aiyin.rigel\n' > "$layout_root/apps/rigel/ios/Flutter/Release.xcconfig"
+python3 - "$layout_root/apps/rigel/ios/Runner/Info.plist" <<'PY'
+import plistlib, sys
+plistlib.dump({"CFBundleDisplayName": "Rigel", "CFBundleIdentifier": "com.aiyin.rigel"}, open(sys.argv[1], "wb"))
+PY
+git -C "$layout_root" add .
+git -C "$layout_root" commit -q -m 'fixture app'
+layout_sha="$(git -C "$layout_root" rev-parse HEAD)"
+layout_spec="${TMPDIR}/layout-spec.json"
+jq --arg sha "$layout_sha" '.sourceCommit = $sha | .config.orion.commit = $sha' "$FIXTURE" > "$layout_spec"
+layout_hash="$(compute_spec_hash "$layout_spec")"
+jq --arg h "$layout_hash" '.specHash = $h' "$layout_spec" > "${TMPDIR}/layout-spec-hashed.json"
+mv "${TMPDIR}/layout-spec-hashed.json" "$layout_spec"
+bad_layout="${TMPDIR}/bad-layout"
+mkdir -p "$bad_layout"
+git -C "$bad_layout" init -q
+git -C "$bad_layout" config commit.gpgsign false
+git -C "$bad_layout" config user.email test@example.invalid
+git -C "$bad_layout" config user.name contract
+git -C "$bad_layout" commit -q --allow-empty -m empty
+bad_sha="$(git -C "$bad_layout" rev-parse HEAD)"
+bad_spec="${TMPDIR}/bad-layout-spec.json"
+jq --arg sha "$bad_sha" '.sourceCommit = $sha | .config.orion.commit = $sha' "$FIXTURE" > "$bad_spec"
+bad_hash="$(compute_spec_hash "$bad_spec")"
+jq --arg h "$bad_hash" '.specHash = $h' "$bad_spec" > "${TMPDIR}/bad-layout-spec-hashed.json"
+if "${ROOT_DIR}/scripts/build-android" --spec "${TMPDIR}/bad-layout-spec-hashed.json" --workspace "$bad_layout" --output-dir "${TMPDIR}/bad-out"; then
+  log "unknown source layout was accepted"
+  exit 1
+fi
+sub_root="${TMPDIR}/cosmos-layout"
+sub_orion="${TMPDIR}/orion-sub"
+mkdir -p "$sub_orion/apps/rigel/tool"
+printf 'generator\n' > "$sub_orion/apps/rigel/tool/generate_release_build.dart"
+git -C "$sub_orion" init -q
+git -C "$sub_orion" config commit.gpgsign false
+git -C "$sub_orion" config user.email test@example.invalid
+git -C "$sub_orion" config user.name contract
+git -C "$sub_orion" add .
+git -C "$sub_orion" commit -q -m orion
+orion_sha="$(git -C "$sub_orion" rev-parse HEAD)"
+mkdir -p "$sub_root"
+printf '[submodule "orion"]\n\tpath = orion\n\turl = https://github.com/prtmax/orion.git\n' > "$sub_root/.gitmodules"
+git -C "$sub_root" init -q
+git -C "$sub_root" config commit.gpgsign false
+git -C "$sub_root" config user.email test@example.invalid
+git -C "$sub_root" config user.name contract
+git -C "$sub_root" add .gitmodules
+git -C "$sub_root" commit -q -m cosmos
+mkdir -p "$sub_root/orion"
+git clone -q "$sub_orion" "$sub_root/orion"
+cosmos_sha="$(git -C "$sub_root" rev-parse HEAD)"
+# shellcheck source=scripts/lib/common.sh
+source "${ROOT_DIR}/scripts/lib/common.sh"
+resolved="$(resolve_release_app_dir "$sub_root" "$cosmos_sha" "$orion_sha")"
+test "$resolved" = "$sub_root/orion/apps/rigel"
+if ( resolve_release_app_dir "$layout_root" "$layout_sha" "1111111111111111111111111111111111111111" >/dev/null ); then
+  log "direct orion checkout accepted a different orion commit"
+  exit 1
+fi
+tool_bin="${TMPDIR}/buildbin"
+mkdir -p "$tool_bin"
+cat > "${tool_bin}/dart" <<'MOCKDART'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${MOCK_DART_LOG:?}"
+out=""
+prev=""
+for arg in "$@"; do
+  if [[ "$prev" == "tool/generate_release_build.dart" ]]; then spec="$arg"; fi
+  prev="$arg"
+  out="$arg"
+done
+python3 - "$spec" "$out" <<'PY'
+import json, sys
+from pathlib import Path
+spec = json.loads(Path(sys.argv[1]).read_text())
+out = Path(sys.argv[2])
+out.mkdir(parents=True, exist_ok=True)
+env = spec["config"]["environment"]
+app = spec["config"]["app"]
+platform = spec["platform"]
+identifier = app["applicationId"] if platform == "android" else app["bundleId"]
+defines = {
+    "APP_ENV": env["name"],
+    "MERCURY_BASE_URL": env["mercuryBaseUrl"],
+    "RUNTIME_BASE_URL": env["runtimeBaseUrl"],
+    "RUNTIME_APP_BINDING": str(spec["appId"]),
+    "RELEASE_CHANNEL": env["releaseChannel"],
+}
+(out / "dart-defines.json").write_text(json.dumps(defines))
+(out / "bundled.json").write_text(json.dumps(spec["config"]["release"]["bundled"]))
+(out / "platform-profiles.json").write_text(json.dumps({platform: {"applicationIdentifier": identifier, "targets": spec["targets"]}}))
+PY
+MOCKDART
+cat > "${tool_bin}/flutter" <<'MOCKFLUTTER'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${MOCK_FLUTTER_LOG:?}"
+printf 'Flutter 3.47.2\n'
+if [[ "$*" == *"build apk"* ]]; then
+  mkdir -p build/app/outputs/flutter-apk
+  printf 'apk-bytes' > build/app/outputs/flutter-apk/app-release.apk
+fi
+if [[ "$*" == *"build appbundle"* ]]; then
+  mkdir -p build/app/outputs/bundle/release
+  printf 'aab-bytes' > build/app/outputs/bundle/release/app-release.aab
+fi
+if [[ "$*" == *"build ios"* ]]; then
+  mkdir -p build/ios/iphoneos/Runner.app/Frameworks/Demo.framework
+  python3 - ios/Runner/Info.plist build/ios/iphoneos/Runner.app/Info.plist "$@" <<'PY'
+import plistlib, sys
+from pathlib import Path
+info = plistlib.loads(Path(sys.argv[1]).read_bytes())
+args = sys.argv[3:]
+def flag(name):
+    return args[args.index(name) + 1]
+info["CFBundleIdentifier"] = __import__("os").environ["IOS_BUNDLE_ID"]
+info["CFBundleShortVersionString"] = flag("--build-name")
+info["CFBundleVersion"] = flag("--build-number")
+Path(sys.argv[2]).write_bytes(plistlib.dumps(info))
+PY
+  printf 'framework' > build/ios/iphoneos/Runner.app/Frameworks/Demo.framework/Demo
+  ln -sfn Demo build/ios/iphoneos/Runner.app/Frameworks/Demo.framework/DemoLink
+  chmod 755 build/ios/iphoneos/Runner.app/Frameworks/Demo.framework/Demo
+fi
+MOCKFLUTTER
+cat > "${tool_bin}/aapt" <<'MOCKAAPT'
+#!/usr/bin/env bash
+printf "%s\n" "package: name='com.example.contract' versionCode='7' versionName='1.2.3'"
+MOCKAAPT
+chmod +x "${tool_bin}/dart" "${tool_bin}/flutter" "${tool_bin}/aapt"
+export RUNALL_FLUTTER="${tool_bin}/flutter"
+export RUNALL_DART="${tool_bin}/dart"
+export MOCK_DART_LOG="${TMPDIR}/dart.log"
+export MOCK_FLUTTER_LOG="${TMPDIR}/flutter.log"
+: > "$MOCK_DART_LOG"
+: > "$MOCK_FLUTTER_LOG"
+caller="${TMPDIR}/caller"
+mkdir -p "$caller"
+(
+  cd "$caller"
+  PATH="${tool_bin}:${PATH}" "${ROOT_DIR}/scripts/build-android" \
+    --spec "$layout_spec" --workspace "$layout_root" --output-dir rel-unsigned
+)
+test -f "${caller}/rel-unsigned/app-release.apk"
+test ! -e "${ROOT_DIR}/rel-unsigned/app-release.apk"
+test ! -e "${layout_root}/apps/rigel/rel-unsigned/app-release.apk"
+grep -q 'tool/generate_release_build.dart' "$MOCK_DART_LOG"
+grep -q -- '--dart-define-from-file' "$MOCK_FLUTTER_LOG"
+grep -q 'https://mercury.example.test' "${layout_root}/apps/rigel/.runall/release-build/dart-defines.json"
+python3 - "${layout_root}/apps/rigel/assets/releases/bundled.json" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+if doc.get("releaseId") != "14":
+    raise SystemExit("bundled release was not deployed from the frozen spec")
+PY
+: > "$MOCK_FLUTTER_LOG"
+ios_spec="${TMPDIR}/layout-ios-spec.json"
+jq '.platform = "ios" | .targets = ["ipa"]' "$layout_spec" > "$ios_spec"
+ios_layout_hash="$(compute_spec_hash "$ios_spec")"
+jq --arg h "$ios_layout_hash" '.specHash = $h' "$ios_spec" > "${TMPDIR}/layout-ios-hashed.json"
+mv "${TMPDIR}/layout-ios-hashed.json" "$ios_spec"
+ios_caller="${TMPDIR}/ios-caller"
+mkdir -p "$ios_caller"
+(
+  cd "$ios_caller"
+  PATH="${tool_bin}:${PATH}" "${ROOT_DIR}/scripts/build-ios" \
+    --spec "$ios_spec" --workspace "$layout_root" --output-dir rel-unsigned
+)
+test -f "${ios_caller}/rel-unsigned/Runner.app.tar"
+test ! -d "${ios_caller}/rel-unsigned/Runner.app"
+mkdir -p "${TMPDIR}/ios-roundtrip"
+tar -xf "${ios_caller}/rel-unsigned/Runner.app.tar" -C "${TMPDIR}/ios-roundtrip"
+test -L "${TMPDIR}/ios-roundtrip/Runner.app/Frameworks/Demo.framework/DemoLink"
+test "$(stat -c '%a' "${TMPDIR}/ios-roundtrip/Runner.app/Frameworks/Demo.framework/Demo")" = "755"
+grep -q -- '--no-codesign' "$MOCK_FLUTTER_LOG"
+grep -q -- '--build-name 1.2.3' "$MOCK_FLUTTER_LOG"
+python3 - "${layout_root}/apps/rigel/ios/Flutter/Release.xcconfig" <<'PY'
+from pathlib import Path
+import sys
+text = Path(sys.argv[1]).read_text()
+if "IOS_BUNDLE_ID=com.example.contract" not in text:
+    raise SystemExit("frozen bundle id was not applied")
+PY
+
+log "contract: upload rejects a mismatched grant, failed PUT, and failed complete"
+upload_cases="${TMPDIR}/upload-cases"
+mkdir -p "$upload_cases"
+printf 'apk-bytes' > "${upload_cases}/app.apk"
+printf 'aab-bytes' > "${upload_cases}/app.aab"
+printf 'ipa-bytes' > "${upload_cases}/app.ipa"
+cat > "${upload_cases}/curl" <<'MOCKUP'
+#!/usr/bin/env bash
+joined="$*"
+data=""
+prev=""
+for arg in "$@"; do
+  if [[ "$prev" == "--data-binary" ]]; then data="$arg"; fi
+  prev="$arg"
+done
+mode="${MOCK_UPLOAD_MODE:?}"
+if [[ "$joined" == *" -X PUT "* || "$joined" == *" -X PUT" ]]; then
+  if [[ "$mode" == "put-fail" ]]; then exit 1; fi
+  printf 'put %s\n' "$joined" >> "${MOCK_UPLOAD_LOG:?}"
+  exit 0
+fi
+if [[ "$joined" == *"/complete"* ]]; then
+  if [[ "$mode" == "complete-fail" ]]; then exit 1; fi
+  printf '%s\n' "$data" >> "${MOCK_UPLOAD_LOG:?}"
+  printf '{}\n'
+  exit 0
+fi
+if [[ -n "$data" ]]; then
+  size=$(wc -c < "${MOCK_UPLOAD_ARTIFACT:?}" | tr -d ' ')
+  digest=$(sha256sum "${MOCK_UPLOAD_ARTIFACT}" | awk '{print $1}')
+  name=$(basename "${MOCK_UPLOAD_ARTIFACT}")
+  target="${MOCK_UPLOAD_TARGET:?}"
+  if [[ "$target" == "apk" ]]; then ctype="application/vnd.android.package-archive"; else ctype="application/octet-stream"; fi
+  key="builds/contract/${target}/${digest}/${name}"
+  url="https://uploads.example.test/object"
+  if [[ "$mode" == "bad-grant" ]]; then digest="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; fi
+  if [[ "$mode" == "bad-url" ]]; then url="http://uploads.example.test/object"; fi
+  printf '{"url":"%s","method":"PUT","objectKey":"%s","fileName":"%s","contentType":"%s","byteSize":%s,"sha256":"%s","target":"%s","headers":{}}\n' "$url" "$key" "$name" "$ctype" "$size" "$digest" "$target"
+  exit 0
+fi
+exit 1
+MOCKUP
+chmod +x "${upload_cases}/curl"
+for target in apk aab ipa; do
+  spec_for="$layout_spec"
+  if [[ "$target" == "aab" ]]; then
+    spec_for="${TMPDIR}/aab-upload-spec.json"
+    jq '.targets = ["aab"]' "$layout_spec" > "$spec_for"
+    h="$(compute_spec_hash "$spec_for")"
+    jq --arg hash "$h" '.specHash = $hash' "$spec_for" > "${spec_for}.hashed"
+    mv "${spec_for}.hashed" "$spec_for"
+  elif [[ "$target" == "ipa" ]]; then
+    spec_for="$ios_spec"
+  fi
+  : > "${TMPDIR}/case.log"
+  PATH="${upload_cases}:${PATH}" \
+    MOCK_UPLOAD_MODE=ok \
+    MOCK_UPLOAD_LOG="${TMPDIR}/case.log" \
+    MOCK_UPLOAD_ARTIFACT="${upload_cases}/app.${target}" \
+    MOCK_UPLOAD_TARGET="$target" \
+    COSMOS_BUILD_ARTIFACT_UPLOAD_URL="https://example.test/internal" \
+    COSMOS_BUILD_CREDENTIAL="test-credential" \
+    BUILD_RUN_ID="run-contract-test" \
+    "${ROOT_DIR}/scripts/upload-artifacts" --spec "$spec_for" --artifact "${upload_cases}/app.${target}" --target "$target"
+  grep -q '"target": "'"$target"'"' "${TMPDIR}/case.log"
+  if [[ "$target" != "apk" ]]; then
+    grep -q 'application/octet-stream' "${TMPDIR}/case.log"
+  fi
+done
+if PATH="${upload_cases}:${PATH}" MOCK_UPLOAD_MODE=bad-grant MOCK_UPLOAD_LOG="${TMPDIR}/case.log" MOCK_UPLOAD_ARTIFACT="${upload_cases}/app.apk" MOCK_UPLOAD_TARGET=apk COSMOS_BUILD_ARTIFACT_UPLOAD_URL="https://example.test/internal" COSMOS_BUILD_CREDENTIAL="test-credential" BUILD_RUN_ID="run-contract-test" "${ROOT_DIR}/scripts/upload-artifacts" --spec "$layout_spec" --artifact "${upload_cases}/app.apk" --target apk; then
+  log "inconsistent upload grant was accepted"
+  exit 1
+fi
+if PATH="${upload_cases}:${PATH}" MOCK_UPLOAD_MODE=bad-url MOCK_UPLOAD_LOG="${TMPDIR}/case.log" MOCK_UPLOAD_ARTIFACT="${upload_cases}/app.apk" MOCK_UPLOAD_TARGET=apk COSMOS_BUILD_ARTIFACT_UPLOAD_URL="https://example.test/internal" COSMOS_BUILD_CREDENTIAL="test-credential" BUILD_RUN_ID="run-contract-test" "${ROOT_DIR}/scripts/upload-artifacts" --spec "$layout_spec" --artifact "${upload_cases}/app.apk" --target apk; then
+  log "non-https upload URL was accepted"
+  exit 1
+fi
+: > "${TMPDIR}/case.log"
+if PATH="${upload_cases}:${PATH}" MOCK_UPLOAD_MODE=put-fail MOCK_UPLOAD_LOG="${TMPDIR}/case.log" MOCK_UPLOAD_ARTIFACT="${upload_cases}/app.apk" MOCK_UPLOAD_TARGET=apk COSMOS_BUILD_ARTIFACT_UPLOAD_URL="https://example.test/internal" COSMOS_BUILD_CREDENTIAL="test-credential" BUILD_RUN_ID="run-contract-test" "${ROOT_DIR}/scripts/upload-artifacts" --spec "$layout_spec" --artifact "${upload_cases}/app.apk" --target apk; then
+  log "PUT failure was reported as success"
+  exit 1
+fi
+if grep -q '/complete' "${TMPDIR}/case.log"; then
+  log "complete ran after PUT failure"
+  exit 1
+fi
+if PATH="${upload_cases}:${PATH}" MOCK_UPLOAD_MODE=complete-fail MOCK_UPLOAD_LOG="${TMPDIR}/case.log" MOCK_UPLOAD_ARTIFACT="${upload_cases}/app.apk" MOCK_UPLOAD_TARGET=apk COSMOS_BUILD_ARTIFACT_UPLOAD_URL="https://example.test/internal" COSMOS_BUILD_CREDENTIAL="test-credential" BUILD_RUN_ID="run-contract-test" "${ROOT_DIR}/scripts/upload-artifacts" --spec "$layout_spec" --artifact "${upload_cases}/app.apk" --target apk; then
+  log "complete failure was reported as success"
+  exit 1
+fi
 
 log "contract: sensitive workflows are pinned to an immutable SHA"
 # Default pull_request checkout is depth-1, so ancestor pin commits are absent and

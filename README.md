@@ -47,13 +47,14 @@ this repository. Missing material or tools fail the job; they do not produce a d
 |--------|------|
 | `scripts/exchange-build-credential` | GitHub OIDC → Cosmos bearer token |
 | `scripts/load-build-spec` | Fetch or load local frozen spec + validation |
-| `scripts/checkout-source` | Prepare-only clone. Token is a per-command header, never a remote URL |
-| `scripts/build-android` | Unsigned Flutter APK/AAB from an existing checkout |
+| `scripts/checkout-source` | Prepare-only clone of a direct Orion repo or a Cosmos checkout with its Orion submodule. Token is a per-command header, never a remote URL |
+| `scripts/ensure-flutter` | Install the Flutter SDK pinned by `config.orion.toolchainVersion` and `.fvmrc` |
+| `scripts/build-android` | Unsigned Flutter APK/AAB from frozen Orion generator output |
 | `scripts/sign-android` | Sign APK, verify package, version, and cert fingerprint |
 | `scripts/sign-aab` | Sign AAB with jarsigner, verify version and cert fingerprint |
-| `scripts/build-ios` | Unsigned iOS Runner.app from an existing checkout |
+| `scripts/build-ios` | Unsigned iOS Runner.app from frozen Orion generator output, packed as a tar so symlinks survive upload |
 | `scripts/sign-ios` | Sign Runner.app, package IPA, record the sign result |
-| `scripts/upload-artifacts` | Request presigned PUT and upload APK, AAB, or IPA |
+| `scripts/upload-artifacts` | Authorize with `byteSize`, PUT only to the granted https URL, then call artifact complete |
 | `scripts/report-result` | Attempt progress / terminal status callback |
 
 Local contract tests (no network):

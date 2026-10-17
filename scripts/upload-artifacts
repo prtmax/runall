@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Request presigned upload URLs and upload signed artifacts (phase B finalize).
+# Presign, PUT, and complete a signed artifact so Mercury can verify it.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -57,13 +57,27 @@ assert_non_empty "BUILD_RUN_ID" "${BUILD_RUN_ID:-}"
 
 require_cmd curl
 require_cmd jq
+require_cmd python3
 
 if [[ -z "$FILE_NAME" ]]; then
   FILE_NAME="$(basename "$ARTIFACT")"
 fi
+case "$TARGET" in
+  apk) [[ "$FILE_NAME" == *.apk ]] || { log "apk file name rejected"; exit 1; } ;;
+  aab) [[ "$FILE_NAME" == *.aab ]] || { log "aab file name rejected"; exit 1; } ;;
+  ipa) [[ "$FILE_NAME" == *.ipa ]] || { log "ipa file name rejected"; exit 1; } ;;
+esac
 
 size="$(wc -c <"$ARTIFACT" | tr -d ' ')"
 sha256="$(sha256_file "$ARTIFACT")"
+if [[ ! "$size" =~ ^[1-9][0-9]*$ ]]; then
+  log "artifact is empty"
+  exit 1
+fi
+if [[ ! "$sha256" =~ ^[0-9a-f]{64}$ ]]; then
+  log "artifact digest is not SHA-256"
+  exit 1
+fi
 
 if [[ -z "$CONTENT_TYPE" ]]; then
   if [[ "$TARGET" == "apk" ]]; then
@@ -74,30 +88,97 @@ if [[ -z "$CONTENT_TYPE" ]]; then
 fi
 
 upload_base="${COSMOS_BUILD_ARTIFACT_UPLOAD_URL%/}"
-url="${upload_base}/build-runs/${BUILD_RUN_ID}/artifact-uploads"
+authorize_url="${upload_base}/build-runs/${BUILD_RUN_ID}/artifact-uploads"
+complete_url="${authorize_url}/${TARGET}/complete"
+workdir="$(mktemp -d)"
+cleanup() { rm -rf "$workdir"; }
+trap cleanup EXIT
 
-response="$(curl --fail-with-body -sS -X POST \
-  -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
-  -H 'Content-Type: application/json' \
-  --data-binary "$(jq -n \
-    --arg target "$TARGET" \
-    --arg fileName "$FILE_NAME" \
-    --arg contentType "$CONTENT_TYPE" \
-    --argjson size "$size" \
-    --arg sha256 "$sha256" \
-    '{target: $target, fileName: $fileName, contentType: $contentType, size: $size, sha256: $sha256}')" \
-  "$url")"
+post_json() {
+  local url="$1" body="$2" out="$3" attempt
+  for attempt in 1 2 3; do
+    if curl --fail-with-body --retry 0 -sS -X POST \
+      -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
+      -H 'Content-Type: application/json' \
+      --data-binary "$body" \
+      "$url" > "$out"; then
+      return 0
+    fi
+    log "POST failed attempt ${attempt}"
+  done
+  return 1
+}
 
-put_url="$(echo "$response" | jq -r '.url // .uploadUrl // .presignedUrl // empty')"
-assert_non_empty "uploadUrl" "$put_url"
+request_body="$(jq -n \
+  --arg target "$TARGET" \
+  --arg fileName "$FILE_NAME" \
+  --arg contentType "$CONTENT_TYPE" \
+  --argjson byteSize "$size" \
+  --arg sha256 "$sha256" \
+  '{target: $target, fileName: $fileName, contentType: $contentType, byteSize: $byteSize, sha256: $sha256}')"
 
-headers_json="$(echo "$response" | jq -c '.headers // .uploadHeaders // {}')"
-curl_args=(-sS -X PUT --data-binary "@${ARTIFACT}")
-while IFS= read -r line; do
-  [[ -z "$line" ]] && continue
-  curl_args+=(-H "$line")
-done < <(echo "$headers_json" | jq -r 'to_entries[] | "\(.key): \(.value)"')
+post_json "$authorize_url" "$request_body" "$workdir/grant.json" || {
+  log "artifact upload was not authorized"
+  exit 1
+}
 
-curl --fail-with-body "${curl_args[@]}" "$put_url"
+python3 - "$workdir/grant.json" "$TARGET" "$FILE_NAME" "$CONTENT_TYPE" "$size" "$sha256" <<'PY'
+import json, sys
+from urllib.parse import urlparse
+grant = json.load(open(sys.argv[1], encoding="utf-8"))
+target, file_name, content_type, size, digest = sys.argv[2:]
+if grant.get("target") != target or grant.get("fileName") != file_name or grant.get("contentType") != content_type:
+    raise SystemExit("upload grant does not match the artifact")
+if grant.get("byteSize") != int(size) or grant.get("sha256") != digest:
+    raise SystemExit("upload grant size or digest does not match the artifact")
+key = grant.get("objectKey") or ""
+if not key or key.startswith("/") or ".." in key or "\\" in key or "://" in key:
+    raise SystemExit("upload grant objectKey rejected")
+method = grant.get("method") or "PUT"
+if method != "PUT":
+    raise SystemExit("upload grant method must be PUT")
+url = grant.get("url") or grant.get("uploadUrl") or grant.get("presignedUrl") or ""
+parsed = urlparse(url)
+if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+    raise SystemExit("upload URL must be https without credentials")
+PY
+
+put_url="$(jq -r '.url // .uploadUrl // .presignedUrl' "$workdir/grant.json")"
+headers_json="$(jq -c '.headers // .uploadHeaders // {}' "$workdir/grant.json")"
+put_once() {
+  local -a curl_args
+  curl_args=(-sS --fail-with-body --proto '=https' -X PUT --data-binary "@${ARTIFACT}")
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    curl_args+=(-H "$line")
+  done < <(printf '%s' "$headers_json" | jq -r 'to_entries[] | "\(.key): \(.value)"')
+  curl "${curl_args[@]}" "$put_url"
+}
+put_ok=0
+for attempt in 1 2 3; do
+  if put_once; then
+    put_ok=1
+    break
+  fi
+  log "PUT failed attempt ${attempt}"
+done
+if [[ "$put_ok" != 1 ]]; then
+  log "artifact PUT failed; complete was not called"
+  exit 1
+fi
+
+object_key="$(jq -r '.objectKey' "$workdir/grant.json")"
+complete_body="$(jq -n \
+  --arg target "$TARGET" \
+  --arg objectKey "$object_key" \
+  --arg fileName "$FILE_NAME" \
+  --arg contentType "$CONTENT_TYPE" \
+  --argjson byteSize "$size" \
+  --arg sha256 "$sha256" \
+  '{target: $target, objectKey: $objectKey, fileName: $fileName, contentType: $contentType, byteSize: $byteSize, sha256: $sha256}')"
+post_json "$complete_url" "$complete_body" "$workdir/complete.json" || {
+  log "artifact upload complete failed"
+  exit 1
+}
 
 log "uploaded target=$TARGET file=$FILE_NAME size=$size"
