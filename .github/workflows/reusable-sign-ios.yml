@@ -65,6 +65,9 @@ jobs:
             spec="$(find spec -name build-spec.json -print -quit)"
           fi
           test -n "$spec" && test -f "$spec"
+          if [[ -f unsigned/Runner.app.tar ]]; then
+            tar -xf unsigned/Runner.app.tar -C unsigned
+          fi
           app="$(find unsigned -name '*.app' -type d -print -quit)"
           test -n "$app" && test -d "$app"
           mkdir -p signed

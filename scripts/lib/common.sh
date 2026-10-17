@@ -27,6 +27,69 @@ assert_non_empty() {
   fi
 }
 
+source_origin_url() {
+  local repository="$1" slug=""
+  if [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    slug="$repository"
+  elif [[ "$repository" =~ ^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(\.git)?$ ]]; then
+    slug="${BASH_REMATCH[1]}"
+  else
+    log "repository is not a GitHub owner/name or https URL"
+    exit 1
+  fi
+  printf 'https://github.com/%s.git' "$slug"
+}
+
+read_orion_commit() {
+  local file="$1" commit
+  require_cmd jq
+  commit="$(jq -r '.config.orion.commit // empty' "$file")"
+  if [[ ! "$commit" =~ ^[0-9a-f]{40}$ || "$commit" =~ ^0+$ ]]; then
+    log "config.orion.commit must be an exact Git commit"
+    exit 1
+  fi
+  printf '%s' "$commit"
+}
+
+# Print the Flutter app directory for a checked-out source tree.
+# Supported layouts are a direct Orion repo and a Cosmos repo whose orion
+# submodule is already checked out. Anything else fails closed.
+resolve_release_app_dir() {
+  local workspace="$1" source_commit="$2" orion_commit="$3" head actual
+  head="$(git -C "$workspace" rev-parse HEAD)"
+  if [[ "$head" != "$source_commit" ]]; then
+    log "workspace source commit mismatch"
+    exit 1
+  fi
+  if [[ -f "$workspace/.gitmodules" ]] && grep -q 'submodule "orion"' "$workspace/.gitmodules"; then
+    if [[ ! -e "$workspace/orion/.git" ]]; then
+      log "cosmos source is missing the orion submodule checkout"
+      exit 1
+    fi
+    actual="$(git -C "$workspace/orion" rev-parse HEAD)"
+    if [[ "$actual" != "$orion_commit" ]]; then
+      log "workspace orion commit mismatch"
+      exit 1
+    fi
+    if [[ ! -f "$workspace/orion/apps/rigel/tool/generate_release_build.dart" ]]; then
+      log "orion submodule is not a release app checkout"
+      exit 1
+    fi
+    printf '%s\n' "$workspace/orion/apps/rigel"
+    return 0
+  fi
+  if [[ -f "$workspace/apps/rigel/tool/generate_release_build.dart" ]]; then
+    if [[ "$source_commit" != "$orion_commit" ]]; then
+      log "direct orion checkout must match config.orion.commit"
+      exit 1
+    fi
+    printf '%s\n' "$workspace/apps/rigel"
+    return 0
+  fi
+  log "source layout is neither an orion repo nor a cosmos checkout with an orion submodule"
+  exit 1
+}
+
 sha256_file() {
   local path="$1"
   if command -v sha256sum >/dev/null 2>&1; then
@@ -103,9 +166,14 @@ validate_build_spec_document() {
   local spec_file="$1" expected_run_id="${2:-}"
 
   require_cmd jq
+  jq -e '.schemaVersion == "cosmos.release-build.v1"' "$spec_file" >/dev/null
+  jq -e '.status == "ready"' "$spec_file" >/dev/null
   jq -e '.specHash | startswith("sha256:")' "$spec_file" >/dev/null
-  jq -r '.repository' "$spec_file" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+  jq -r '.releaseSnapshotDigest' "$spec_file" | grep -Eq '^sha256:[0-9a-f]{64}$'
+  jq -e '.config.orion.toolchainVersion | type == "string" and length > 0' "$spec_file" >/dev/null
+  source_origin_url "$(json_get "$spec_file" '.repository')" >/dev/null
   jq -r '.sourceCommit' "$spec_file" | grep -Eq '^[0-9a-f]{40}$'
+  read_orion_commit "$spec_file" >/dev/null
   jq -r '.platform' "$spec_file" | grep -Eq '^(android|ios)$'
 
   local platform

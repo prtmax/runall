@@ -164,7 +164,7 @@ PY
 
 app_name="$(basename "$INPUT")"
 mkdir -p "$tmpdir/Payload"
-cp -R "$INPUT" "$tmpdir/Payload/$app_name"
+cp -a "$INPUT" "$tmpdir/Payload/$app_name"
 cp "$tmpdir/profile.mobileprovision" "$tmpdir/Payload/$app_name/embedded.mobileprovision"
 info="$tmpdir/Payload/$app_name/Info.plist"
 if [[ ! -f "$info" ]]; then
@@ -185,9 +185,25 @@ if str(info.get("CFBundleShortVersionString", "")) != version_name:
 if str(info.get("CFBundleVersion", "")) != version_code:
     sys.exit("app build number mismatch")
 PY
-codesign --force --sign "$identity" --keychain "$keychain" --timestamp=none "$tmpdir/Payload/$app_name"
-codesign --verify --strict "$tmpdir/Payload/$app_name"
-(cd "$tmpdir" && zip -qr "$OUTPUT" Payload)
+python3 - "$tmpdir/profile.plist" "$tmpdir/entitlements.plist" <<'PY'
+import plistlib
+import sys
+from pathlib import Path
+
+profile = plistlib.loads(Path(sys.argv[1]).read_bytes())
+entitlements = profile.get("Entitlements")
+if not isinstance(entitlements, dict) or not entitlements:
+    raise SystemExit("profile entitlements missing")
+Path(sys.argv[2]).write_bytes(plistlib.dumps(entitlements))
+PY
+signed_app="$tmpdir/Payload/$app_name"
+while IFS= read -r nested; do
+  [[ "$nested" == "$signed_app" ]] && continue
+  codesign --force --sign "$identity" --keychain "$keychain" --timestamp=none "$nested"
+done < <(find "$signed_app" -depth \( -name '*.framework' -o -name '*.appex' -o -name '*.app' -o -name '*.dylib' \) -print)
+codesign --force --sign "$identity" --keychain "$keychain" --timestamp=none --entitlements "$tmpdir/entitlements.plist" "$signed_app"
+codesign --verify --deep --strict "$signed_app"
+(cd "$tmpdir" && zip -qry -y "$OUTPUT" Payload)
 [[ -f "$OUTPUT" ]] || { log "ipa was not written"; exit 1; }
 report_sign_result ipa "$bundle_id" "$expected_version_name" "$expected_version_code" "$want" "$OUTPUT"
 reported=1
