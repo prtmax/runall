@@ -1,0 +1,14 @@
+tree 55dc85ad58c9c99ee7abf873ebb0af1929c17eda
+parent d7368d79cb5e39c025771e8ccbb84b4be13d8f81
+author 0xfe10 <0xfe10@proton.me> 1792255931 +0000
+committer 0xfe10 <0xfe10@proton.me> 1792255931 +0000
+gpgsig -----BEGIN SSH SIGNATURE-----
+ U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgdwYsAzDgJTlSC/8dOXaKyRU4qn
+ R7D8MCEB9Mn7ycMGQAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5
+ AAAAQJ9IRuOSLjeC45gyjrL/qMXyhIW4gw5hcTIqs73IBt84YhzNNZ66L6dpezSWWxqrm2
+ chncDmo0kpmK0g1ArQcwU=
+ -----END SSH SIGNATURE-----
+
+fix: align release builds with the v1 spec contract
+
+Hash the Mercury/Orion canonical payload, consume frozen Orion output at absolute artifact paths, and complete presigned uploads after PUT.

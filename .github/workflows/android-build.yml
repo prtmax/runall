@@ -19,7 +19,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-prepare.yml@88e370f0cf31feb855fb8498c6c7880f69059b33
+    uses: prtmax/runall/.github/workflows/reusable-prepare.yml@03ca65293300edc9c488c17e9cd01e3463673f87
     with:
       build_run_id: ${{ inputs.build_run_id }}
     secrets:
@@ -174,7 +174,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-sign-ios.yml@b1f6b78da96112e22bdd2625dba70072945ceb6e
+    uses: prtmax/runall/.github/workflows/reusable-sign-ios.yml@03ca65293300edc9c488c17e9cd01e3463673f87
     with:
       build_run_id: ${{ inputs.build_run_id }}
     secrets:
