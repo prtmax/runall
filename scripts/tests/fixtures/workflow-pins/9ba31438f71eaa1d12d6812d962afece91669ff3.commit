@@ -1,0 +1,14 @@
+tree 4786108a46e83185354a767a05d056652ec79717
+parent 377582ef10b5deb1ea15ba8d7a216148fa09dc2e
+author 0xfe10 <0xfe10@proton.me> 1792314922 +0000
+committer 0xfe10 <0xfe10@proton.me> 1792314922 +0000
+gpgsig -----BEGIN SSH SIGNATURE-----
+ U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgdwYsAzDgJTlSC/8dOXaKyRU4qn
+ R7D8MCEB9Mn7ycMGQAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5
+ AAAAQNCR+cK7Fz8dBoHyo6r+JALqoJAEM36KLS0C44TejiWEM38uIQf9DZ90PiKqJ64ZQo
+ /aqHNE6+njX44BXFJVGQw=
+ -----END SSH SIGNATURE-----
+
+Fetch App Studio packaging bytes during prepare.
+
+Prepare reads the spec's app-studio refs with its existing credential, recomputes each digest, and stages them for compile. Compile still receives only the frozen files.
