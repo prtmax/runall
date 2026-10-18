@@ -244,8 +244,17 @@ for name in ("reusable-prepare.yml", "reusable-sign-android.yml", "reusable-fina
     if name not in text:
         raise SystemExit(f"missing reusable workflow call: {name}")
 ios = text[text.index("  build-ios:"):text.index("  sign-ios:")]
-if "id-token:" in ios or "COSMOS_BUILD_REPOSITORY_TOKEN" in ios:
+if "id-token:" in ios or "COSMOS_BUILD_REPOSITORY_TOKEN" in ios or "COSMOS_BUILD_CREDENTIAL" in ios:
     raise SystemExit("ios compile job still has OIDC or a repository token")
+if "frozen-resources-${{ inputs.build_run_id }}" not in job or "frozen-resources-${{ inputs.build_run_id }}" not in ios:
+    raise SystemExit("compile job does not download the frozen resource artifact")
+if "RUNALL_FROZEN_RESOURCE_ROOT=\"${PWD}/frozen-resources\"" not in job or "RUNALL_FROZEN_RESOURCE_ROOT=\"${PWD}/frozen-resources\"" not in ios:
+    raise SystemExit("compile job does not point at the downloaded frozen resources")
+prepare = open(sys.argv[1].replace("android-build.yml", "reusable-prepare.yml"), encoding="utf-8").read()
+if "stage-frozen-resources" not in prepare or "frozen-resources-${{ inputs.build_run_id }}" not in prepare:
+    raise SystemExit("prepare does not stage and upload frozen resources")
+if "id-token: write" not in prepare:
+    raise SystemExit("prepare lost its OIDC permission")
 if "upstream_result" not in text:
     raise SystemExit("finalize is not wired to upstream failure")
 if "run-name: cosmos-build-${{ inputs.build_run_id }}" not in text:
@@ -1008,6 +1017,96 @@ if RUNALL_RESOURCE_INDEX="$url_index" RUNALL_FROZEN_RESOURCE_ROOT="$layout_resou
   exit 1
 fi
 test "$(wc -l < "$MOCK_DART_LOG")" = "$dart_lines"
+abs_dir="${TMPDIR}/abs-resources"
+mkdir -p "$abs_dir"
+cp "$layout_resources/icon.bin" "$layout_resources/lang.ftl" "$abs_dir/"
+python3 - "$abs_dir/index.json" "$icon_ref" "$lang_ref" "$abs_dir/icon.bin" "$abs_dir/lang.ftl" <<'PY'
+import json, sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({sys.argv[2]: sys.argv[4], sys.argv[3]: sys.argv[5]}) + "\n")
+PY
+abs_caller="${TMPDIR}/abs-caller"
+mkdir -p "$abs_caller"
+(
+  cd "$abs_caller"
+  PATH="${tool_bin}:${PATH}" RUNALL_RESOURCE_INDEX="$abs_dir/index.json" "${ROOT_DIR}/scripts/build-android" \
+    --spec "$layout_spec" --workspace "$layout_root" --output-dir rel-unsigned
+)
+test -f "${abs_caller}/rel-unsigned/app-release.apk"
+test "$(wc -l < "$MOCK_DART_LOG")" -gt "$dart_lines"
+dart_lines="$(wc -l < "$MOCK_DART_LOG")"
+escape_dir="${TMPDIR}/escape-resources"
+mkdir -p "$escape_dir"
+cp "$layout_resources/lang.ftl" "$escape_dir/"
+python3 - "$escape_dir/index.json" "$icon_ref" "$lang_ref" "$layout_resources/icon.bin" "$escape_dir/lang.ftl" <<'PY'
+import json, sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({sys.argv[2]: sys.argv[4], sys.argv[3]: sys.argv[5]}) + "\n")
+PY
+if RUNALL_RESOURCE_INDEX="$escape_dir/index.json" PATH="${tool_bin}:${PATH}" "${ROOT_DIR}/scripts/build-android" \
+  --spec "$layout_spec" --workspace "$layout_root" --output-dir "${TMPDIR}/escape-out"; then
+  log "absolute resource path outside the index directory was accepted"
+  exit 1
+fi
+test ! -e "${TMPDIR}/escape-out/app-release.apk"
+test "$(wc -l < "$MOCK_DART_LOG")" = "$dart_lines"
+python3 - "$abs_dir/index.json" "$icon_ref" "$lang_ref" "$abs_dir" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[4])
+Path(sys.argv[1]).write_text(json.dumps({
+    sys.argv[2]: str(root / ".." / "icon.bin"),
+    sys.argv[3]: str(root / "lang.ftl"),
+}) + "\n")
+PY
+if RUNALL_RESOURCE_INDEX="$abs_dir/index.json" PATH="${tool_bin}:${PATH}" "${ROOT_DIR}/scripts/build-android" \
+  --spec "$layout_spec" --workspace "$layout_root" --output-dir "${TMPDIR}/dotdot-out"; then
+  log "parent segment in an absolute resource path was accepted"
+  exit 1
+fi
+test "$(wc -l < "$MOCK_DART_LOG")" = "$dart_lines"
+ln -s icon.bin "$abs_dir/icon-link.bin"
+python3 - "$abs_dir/index.json" "$icon_ref" "$lang_ref" "$abs_dir/icon-link.bin" "$abs_dir/lang.ftl" <<'PY'
+import json, sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({sys.argv[2]: sys.argv[4], sys.argv[3]: sys.argv[5]}) + "\n")
+PY
+if RUNALL_RESOURCE_INDEX="$abs_dir/index.json" PATH="${tool_bin}:${PATH}" "${ROOT_DIR}/scripts/build-android" \
+  --spec "$layout_spec" --workspace "$layout_root" --output-dir "${TMPDIR}/symlink-out"; then
+  log "symlinked frozen resource was accepted"
+  exit 1
+fi
+test "$(wc -l < "$MOCK_DART_LOG")" = "$dart_lines"
+staged_resources="${TMPDIR}/staged-resources"
+python3 - "$abs_dir/index.json" "$icon_ref" "$lang_ref" "$abs_dir/icon.bin" "$abs_dir/lang.ftl" <<'PY'
+import json, sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({sys.argv[2]: sys.argv[4], sys.argv[3]: sys.argv[5]}) + "\n")
+PY
+"${ROOT_DIR}/scripts/stage-frozen-resources" --spec "$layout_spec" --index "$abs_dir/index.json" --output "$staged_resources"
+python3 - "$staged_resources/index.json" <<'PY'
+import json, sys
+from pathlib import Path
+mapping = json.loads(Path(sys.argv[1]).read_text())
+if not mapping or any(value.startswith("/") or "://" in value or ".." in value for value in mapping.values()):
+    raise SystemExit("staged index did not use relative paths")
+for value in mapping.values():
+    if not (Path(sys.argv[1]).parent / value).is_file():
+        raise SystemExit("staged resource file missing")
+PY
+handoff_caller="${TMPDIR}/handoff-caller"
+mkdir -p "$handoff_caller"
+(
+  cd "$handoff_caller"
+  PATH="${tool_bin}:${PATH}" RUNALL_FROZEN_RESOURCE_ROOT="$staged_resources" "${ROOT_DIR}/scripts/build-android" \
+    --spec "$layout_spec" --workspace "$layout_root" --output-dir "${PWD}/unsigned"
+)
+test -f "${handoff_caller}/unsigned/app-release.apk"
+test ! -e "${ROOT_DIR}/unsigned/app-release.apk"
+if "${ROOT_DIR}/scripts/stage-frozen-resources" --spec "$layout_spec" --output "${TMPDIR}/missing-stage" >/dev/null 2>&1; then
+  log "missing authorized resource index was staged"
+  exit 1
+fi
 if MOCK_BAD_SETTINGS=1 RUNALL_FROZEN_RESOURCE_ROOT="$layout_resources" PATH="${tool_bin}:${PATH}" "${ROOT_DIR}/scripts/build-android" \
   --spec "$layout_spec" --workspace "$layout_root" --output-dir "${TMPDIR}/bad-settings-out"; then
   log "tampered build-settings were accepted"

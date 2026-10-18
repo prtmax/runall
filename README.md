@@ -57,7 +57,7 @@ this repository. Missing material or tools fail the job; they do not produce a d
 | `scripts/upload-artifacts` | Authorize with `byteSize`, PUT only to the granted https URL, then call artifact complete |
 | `scripts/report-result` | Attempt progress / terminal status callback |
 
-Frozen brand and language bytes are not fetched from `ref` URLs. Stage them beside the spec in `frozen-resources/index.json` (ref to a relative path) or set `RUNALL_FROZEN_RESOURCE_ROOT` / `RUNALL_RESOURCE_INDEX`. Digests are checked before `generate_release_build.dart`, and the overlay is copied into `apps/rigel` before compile. Android reads `ANDROID_APPLICATION_ID` and `APP_DISPLAY_NAME` from `build-settings.json`; iOS uses the overlay `Branded.xcconfig`.
+Frozen brand and language bytes are not fetched from `ref` URLs. Prepare copies an authorized local index with `scripts/stage-frozen-resources` and uploads `frozen-resources-<build_run_id>`. Paths in that index may be absolute or relative to the index file, and must stay inside its directory; URLs, `..`, and symlinks are rejected. The compile job downloads only that artifact, sets `RUNALL_FROZEN_RESOURCE_ROOT` to its absolute path, and does not receive OIDC, platform credentials, or signing keys. Digests are checked again before `generate_release_build.dart`. Android reads `ANDROID_APPLICATION_ID` and `APP_DISPLAY_NAME` from `build-settings.json`; iOS uses the overlay `Branded.xcconfig`. Mercury does not yet expose a brand/language byte route, so a runner without the authorized index fails in prepare instead of compiling.
 
 Local contract tests (no network):
 

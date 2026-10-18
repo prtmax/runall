@@ -92,12 +92,26 @@ jobs:
         shell: bash
         run: ./scripts/report-result --status running --phase prepare --run-id "$BUILD_RUN_ID"
 
+      - name: Stage frozen brand and language resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/stage-frozen-resources --spec build-spec.json --output frozen-resources
+
       - name: Upload build spec artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: build-spec-${{ inputs.build_run_id }}
           path: build-spec.json
           retention-days: 7
+
+      - name: Upload frozen resources
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: frozen-resources-${{ inputs.build_run_id }}
+          path: frozen-resources/
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Pack source workspace
         shell: bash

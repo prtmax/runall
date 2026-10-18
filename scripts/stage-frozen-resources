@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Copy an authorized frozen resource index into a directory of relative files.
+# The ref values are opaque. This script does not fetch them and does not read credentials.
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/common.sh
+source "${ROOT_DIR}/scripts/lib/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: stage-frozen-resources --spec <path> --output <dir> [--index <path>]
+
+The index maps frozen refs to local files, absolute or relative to the index.
+Every file must stay inside the index directory. URLs, "..", and symlinks fail.
+EOF
+}
+
+SPEC=""
+OUTPUT=""
+INDEX="${RUNALL_RESOURCE_INDEX:-}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --spec) SPEC="$2"; shift 2 ;;
+    --output) OUTPUT="$2"; shift 2 ;;
+    --index) INDEX="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) log "unknown argument: $1"; usage; exit 1 ;;
+  esac
+done
+
+assert_non_empty "--spec" "$SPEC"
+assert_non_empty "--output" "$OUTPUT"
+validate_build_spec_document "$SPEC"
+
+if [[ -z "$INDEX" && -n "${RUNALL_FROZEN_RESOURCE_ROOT:-}" ]]; then
+  INDEX="${RUNALL_FROZEN_RESOURCE_ROOT%/}/index.json"
+fi
+if [[ -z "$INDEX" ]]; then
+  INDEX="$(dirname "$SPEC")/frozen-resources/index.json"
+fi
+if [[ ! -f "$INDEX" ]]; then
+  log "authorized frozen resource index is missing"
+  exit 1
+fi
+
+python3 - "$SPEC" "$INDEX" "$OUTPUT" "${ROOT_DIR}/scripts/lib" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[4])
+from frozen_resources import stage
+
+stage(sys.argv[1], sys.argv[2], sys.argv[3])
+PY
+log "frozen resources staged"

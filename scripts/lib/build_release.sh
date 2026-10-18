@@ -35,76 +35,14 @@ prepare_frozen_workspace() {
 
 materialize_frozen_resources() {
   local spec="$1" dest="$2"
-  python3 - "$spec" "$dest" "${RUNALL_FROZEN_RESOURCE_ROOT:-}" "${RUNALL_RESOURCE_INDEX:-}" <<'PY'
-import hashlib, json, sys
+  python3 - "$spec" "$dest" "${RUNALL_FROZEN_RESOURCE_ROOT:-}" "${RUNALL_RESOURCE_INDEX:-}" "${RUNALL_ROOT}/scripts/lib" <<'PY'
+import sys
 from pathlib import Path
 
-spec_path = Path(sys.argv[1])
-dest = Path(sys.argv[2])
-root_arg, index_arg = sys.argv[3], sys.argv[4]
-spec = json.loads(spec_path.read_text(encoding="utf-8"))
-config = spec["config"]
+sys.path.insert(0, sys.argv[5])
+from frozen_resources import materialize
 
-def load_index():
-    if index_arg:
-        path = Path(index_arg)
-        if not path.is_file():
-            raise SystemExit("RUNALL_RESOURCE_INDEX is missing")
-        return path
-    root = Path(root_arg) if root_arg else spec_path.parent / "frozen-resources"
-    path = root / "index.json"
-    if not path.is_file():
-        raise SystemExit("frozen resource index is missing")
-    return path
-
-def reject_path(value):
-    if not isinstance(value, str) or value == "" or value.startswith("/") or "://" in value or "\\" in value:
-        raise SystemExit("resource index path must be a relative file")
-    parts = Path(value).parts
-    if any(part in {"", ".", ".."} for part in parts):
-        raise SystemExit("resource index path rejected")
-
-source_index = load_index()
-try:
-    mapping = json.loads(source_index.read_text(encoding="utf-8"))
-except json.JSONDecodeError as exc:
-    raise SystemExit("resource index is not JSON") from exc
-if not isinstance(mapping, dict) or any(not isinstance(key, str) or not isinstance(value, str) for key, value in mapping.items()):
-    raise SystemExit("resource index must map frozen refs to local paths")
-
-required = {}
-for field in ("brandAssets", "languages"):
-    rows = config.get(field)
-    if not isinstance(rows, list) or not rows:
-        raise SystemExit(f"config.{field} is missing")
-    for row in rows:
-        ref, digest = row.get("ref"), row.get("digest")
-        if not isinstance(ref, str) or not isinstance(digest, str):
-            raise SystemExit(f"config.{field} ref is invalid")
-        if ref in required and required[ref] != digest:
-            raise SystemExit("frozen ref digest conflict")
-        required[ref] = digest
-if set(mapping) != set(required):
-    raise SystemExit("resource index refs do not match the frozen spec")
-
-staged = {}
-for ref, digest in required.items():
-    reject_path(mapping[ref])
-    file_path = source_index.parent.joinpath(mapping[ref]).resolve()
-    root = source_index.parent.resolve()
-    if root != file_path and root not in file_path.parents:
-        raise SystemExit("resource file escapes the index directory")
-    if not file_path.is_file() or file_path.is_symlink():
-        raise SystemExit(f"frozen resource file missing: {ref}")
-    data = file_path.read_bytes()
-    actual = "sha256:" + hashlib.sha256(data).hexdigest()
-    if actual != digest:
-        raise SystemExit(f"frozen resource digest mismatch: {ref}")
-    name = hashlib.sha256(ref.encode("utf-8")).hexdigest()
-    target = dest / name
-    target.write_bytes(data)
-    staged[ref] = name
-(dest / "resources.json").write_text(json.dumps(staged, sort_keys=True) + "\n", encoding="utf-8")
+materialize(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
 PY
 }
 
