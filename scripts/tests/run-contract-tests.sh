@@ -244,8 +244,17 @@ for name in ("reusable-prepare.yml", "reusable-sign-android.yml", "reusable-fina
     if name not in text:
         raise SystemExit(f"missing reusable workflow call: {name}")
 ios = text[text.index("  build-ios:"):text.index("  sign-ios:")]
-if "id-token:" in ios or "COSMOS_BUILD_REPOSITORY_TOKEN" in ios:
+if "id-token:" in ios or "COSMOS_BUILD_REPOSITORY_TOKEN" in ios or "COSMOS_BUILD_CREDENTIAL" in ios:
     raise SystemExit("ios compile job still has OIDC or a repository token")
+if "frozen-resources-${{ inputs.build_run_id }}" not in job or "frozen-resources-${{ inputs.build_run_id }}" not in ios:
+    raise SystemExit("compile job does not download the frozen resource artifact")
+if "RUNALL_FROZEN_RESOURCE_ROOT=\"${PWD}/frozen-resources\"" not in job or "RUNALL_FROZEN_RESOURCE_ROOT=\"${PWD}/frozen-resources\"" not in ios:
+    raise SystemExit("compile job does not point at the downloaded frozen resources")
+prepare = open(sys.argv[1].replace("android-build.yml", "reusable-prepare.yml"), encoding="utf-8").read()
+if "stage-frozen-resources" not in prepare or "frozen-resources-${{ inputs.build_run_id }}" not in prepare:
+    raise SystemExit("prepare does not stage and upload frozen resources")
+if "id-token: write" not in prepare:
+    raise SystemExit("prepare lost its OIDC permission")
 if "upstream_result" not in text:
     raise SystemExit("finalize is not wired to upstream failure")
 if "run-name: cosmos-build-${{ inputs.build_run_id }}" not in text:
@@ -775,8 +784,19 @@ PY
 git -C "$layout_root" add .
 git -C "$layout_root" commit -q -m 'fixture app'
 layout_sha="$(git -C "$layout_root" rev-parse HEAD)"
+layout_resources="${TMPDIR}/layout-resources"
+mkdir -p "$layout_resources"
+printf 'icon-bytes' > "$layout_resources/icon.bin"
+printf 'hello = Hello\n' > "$layout_resources/lang.ftl"
+icon_digest="sha256:$(sha256_file "$layout_resources/icon.bin")"
+lang_digest="sha256:$(sha256_file "$layout_resources/lang.ftl")"
+icon_ref="$(jq -r '.config.brandAssets[0].ref' "$FIXTURE")"
+lang_ref="$(jq -r '.config.languages[0].ref' "$FIXTURE")"
+jq -n --arg icon "$icon_ref" --arg lang "$lang_ref" '{($icon): "icon.bin", ($lang): "lang.ftl"}' > "$layout_resources/index.json"
 layout_spec="${TMPDIR}/layout-spec.json"
-jq --arg sha "$layout_sha" '.sourceCommit = $sha | .config.orion.commit = $sha' "$FIXTURE" > "$layout_spec"
+jq --arg sha "$layout_sha" --arg idigest "$icon_digest" --arg ldigest "$lang_digest" \
+  '.sourceCommit = $sha | .config.orion.commit = $sha | .config.brandAssets[0].digest = $idigest | .config.languages[0].digest = $ldigest' \
+  "$FIXTURE" > "$layout_spec"
 layout_hash="$(compute_spec_hash "$layout_spec")"
 jq --arg h "$layout_hash" '.specHash = $h' "$layout_spec" > "${TMPDIR}/layout-spec-hashed.json"
 mv "${TMPDIR}/layout-spec-hashed.json" "$layout_spec"
@@ -831,18 +851,21 @@ mkdir -p "$tool_bin"
 cat > "${tool_bin}/dart" <<'MOCKDART'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${MOCK_DART_LOG:?}"
-out=""
-prev=""
-for arg in "$@"; do
-  if [[ "$prev" == "tool/generate_release_build.dart" ]]; then spec="$arg"; fi
-  prev="$arg"
-  out="$arg"
-done
-python3 - "$spec" "$out" <<'PY'
-import json, sys
+if [[ "${1:-}" != "run" || "${2:-}" != "tool/generate_release_build.dart" || $# -ne 5 ]]; then
+  echo "generator requires SPEC OUTPUT_DIR RESOURCE_INDEX" >&2
+  exit 2
+fi
+if [[ "${MOCK_GENERATOR_FAIL:-}" == "1" ]]; then
+  exit 1
+fi
+python3 - "$3" "$4" "$5" "${MOCK_BAD_SETTINGS:-}" <<'PY'
+import json, os, sys
 from pathlib import Path
 spec = json.loads(Path(sys.argv[1]).read_text())
 out = Path(sys.argv[2])
+index = json.loads(Path(sys.argv[3]).read_text())
+if not index:
+    raise SystemExit("resource index empty")
 out.mkdir(parents=True, exist_ok=True)
 env = spec["config"]["environment"]
 app = spec["config"]["app"]
@@ -855,14 +878,39 @@ defines = {
     "RUNTIME_APP_BINDING": str(spec["appId"]),
     "RELEASE_CHANNEL": env["releaseChannel"],
 }
+bundled = json.dumps(spec["config"]["release"]["bundled"])
 (out / "dart-defines.json").write_text(json.dumps(defines))
-(out / "bundled.json").write_text(json.dumps(spec["config"]["release"]["bundled"]))
+(out / "bundled.json").write_text(bundled)
 (out / "platform-profiles.json").write_text(json.dumps({platform: {"applicationIdentifier": identifier, "targets": spec["targets"]}}))
+settings = {
+    "platform": platform,
+    "applicationId": app["applicationId"],
+    "bundleId": app["bundleId"],
+    "displayName": app["displayName"],
+    "versionName": app["versionName"],
+    "versionCode": app["versionCode"],
+}
+if sys.argv[4] == "1":
+    settings["applicationId"] = "com.example.tampered"
+(out / "build-settings.json").write_text(json.dumps(settings))
+overlay = out / "overlay"
+(overlay / "assets" / "releases").mkdir(parents=True, exist_ok=True)
+(overlay / "assets" / "releases" / "bundled.json").write_text(bundled)
+(overlay / "marker.txt").write_text("frozen-overlay")
+branded = overlay / "ios" / "Flutter"
+branded.mkdir(parents=True, exist_ok=True)
+(branded / "Branded.xcconfig").write_text(
+    f"IOS_BUNDLE_ID={app['bundleId']}\nAPP_DISPLAY_NAME={app['displayName']}\n"
+    f"FLUTTER_BUILD_NAME={app['versionName']}\nFLUTTER_BUILD_NUMBER={app['versionCode']}\n"
+)
 PY
 MOCKDART
 cat > "${tool_bin}/flutter" <<'MOCKFLUTTER'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${MOCK_FLUTTER_LOG:?}"
+printf 'ENV ANDROID_APPLICATION_ID=%s\n' "${ANDROID_APPLICATION_ID-}" >> "${MOCK_FLUTTER_LOG}"
+printf 'ENV APP_DISPLAY_NAME=%s\n' "${APP_DISPLAY_NAME-}" >> "${MOCK_FLUTTER_LOG}"
+printf 'ENV IOS_BUNDLE_ID=%s\n' "${IOS_BUNDLE_ID-}" >> "${MOCK_FLUTTER_LOG}"
 printf 'Flutter 3.47.2\n'
 if [[ "$*" == *"build apk"* ]]; then
   mkdir -p build/app/outputs/flutter-apk
@@ -873,18 +921,28 @@ if [[ "$*" == *"build appbundle"* ]]; then
   printf 'aab-bytes' > build/app/outputs/bundle/release/app-release.aab
 fi
 if [[ "$*" == *"build ios"* ]]; then
+  if [[ ! -f ios/Flutter/Branded.xcconfig ]]; then
+    echo "missing Branded.xcconfig" >&2
+    exit 1
+  fi
   mkdir -p build/ios/iphoneos/Runner.app/Frameworks/Demo.framework
-  python3 - ios/Runner/Info.plist build/ios/iphoneos/Runner.app/Info.plist "$@" <<'PY'
+  python3 - ios/Runner/Info.plist ios/Flutter/Branded.xcconfig build/ios/iphoneos/Runner.app/Info.plist "$@" <<'PY'
 import plistlib, sys
 from pathlib import Path
 info = plistlib.loads(Path(sys.argv[1]).read_bytes())
-args = sys.argv[3:]
+branded = {}
+for line in Path(sys.argv[2]).read_text().splitlines():
+    if "=" in line and not line.startswith("#"):
+        key, value = line.split("=", 1)
+        branded[key] = value
+args = sys.argv[4:]
 def flag(name):
     return args[args.index(name) + 1]
-info["CFBundleIdentifier"] = __import__("os").environ["IOS_BUNDLE_ID"]
+info["CFBundleIdentifier"] = branded["IOS_BUNDLE_ID"]
+info["CFBundleDisplayName"] = branded["APP_DISPLAY_NAME"]
 info["CFBundleShortVersionString"] = flag("--build-name")
 info["CFBundleVersion"] = flag("--build-number")
-Path(sys.argv[2]).write_bytes(plistlib.dumps(info))
+Path(sys.argv[3]).write_bytes(plistlib.dumps(info))
 PY
   printf 'framework' > build/ios/iphoneos/Runner.app/Frameworks/Demo.framework/Demo
   ln -sfn Demo build/ios/iphoneos/Runner.app/Frameworks/Demo.framework/DemoLink
@@ -906,21 +964,155 @@ caller="${TMPDIR}/caller"
 mkdir -p "$caller"
 (
   cd "$caller"
-  PATH="${tool_bin}:${PATH}" "${ROOT_DIR}/scripts/build-android" \
+  PATH="${tool_bin}:${PATH}" RUNALL_FROZEN_RESOURCE_ROOT="$layout_resources" "${ROOT_DIR}/scripts/build-android" \
     --spec "$layout_spec" --workspace "$layout_root" --output-dir rel-unsigned
 )
 test -f "${caller}/rel-unsigned/app-release.apk"
 test ! -e "${ROOT_DIR}/rel-unsigned/app-release.apk"
 test ! -e "${layout_root}/apps/rigel/rel-unsigned/app-release.apk"
 grep -q 'tool/generate_release_build.dart' "$MOCK_DART_LOG"
+grep -q 'resources.json' "$MOCK_DART_LOG"
 grep -q -- '--dart-define-from-file' "$MOCK_FLUTTER_LOG"
+grep -q 'ENV ANDROID_APPLICATION_ID=com.example.contract' "$MOCK_FLUTTER_LOG"
+grep -q 'ENV APP_DISPLAY_NAME=Contract' "$MOCK_FLUTTER_LOG"
 grep -q 'https://mercury.example.test' "${layout_root}/apps/rigel/.runall/release-build/dart-defines.json"
+test "$(cat "${layout_root}/apps/rigel/marker.txt")" = "frozen-overlay"
+aab_spec="${TMPDIR}/layout-aab-spec.json"
+jq '.targets = ["aab"]' "$layout_spec" > "$aab_spec"
+aab_hash="$(compute_spec_hash "$aab_spec")"
+jq --arg h "$aab_hash" '.specHash = $h' "$aab_spec" > "${TMPDIR}/layout-aab-hashed.json"
+mv "${TMPDIR}/layout-aab-hashed.json" "$aab_spec"
+aab_caller="${TMPDIR}/aab-caller"
+mkdir -p "$aab_caller"
+(
+  cd "$aab_caller"
+  PATH="${tool_bin}:${PATH}" RUNALL_FROZEN_RESOURCE_ROOT="$layout_resources" "${ROOT_DIR}/scripts/build-android" \
+    --spec "$aab_spec" --workspace "$layout_root" --output-dir rel-unsigned
+)
+test -f "${aab_caller}/rel-unsigned/app-release.aab"
+test ! -e "${aab_caller}/rel-unsigned/app-release.apk"
 python3 - "${layout_root}/apps/rigel/assets/releases/bundled.json" <<'PY'
 import json, sys
 doc = json.load(open(sys.argv[1]))
 if doc.get("releaseId") != "14":
     raise SystemExit("bundled release was not deployed from the frozen spec")
 PY
+dart_lines="$(wc -l < "$MOCK_DART_LOG")"
+bad_resources="${TMPDIR}/bad-resources"
+mkdir -p "$bad_resources"
+cp "$layout_resources/index.json" "$layout_resources/lang.ftl" "$bad_resources/"
+printf 'tampered' > "$bad_resources/icon.bin"
+if RUNALL_FROZEN_RESOURCE_ROOT="$bad_resources" PATH="${tool_bin}:${PATH}" "${ROOT_DIR}/scripts/build-android" \
+  --spec "$layout_spec" --workspace "$layout_root" --output-dir "${TMPDIR}/bad-resource-out"; then
+  log "resource digest mismatch was accepted"
+  exit 1
+fi
+test ! -e "${TMPDIR}/bad-resource-out/app-release.apk"
+test "$(wc -l < "$MOCK_DART_LOG")" = "$dart_lines"
+url_index="${TMPDIR}/url-index.json"
+jq --arg ref "$icon_ref" '.[$ref] = "https://evil.example/icon.bin"' "$layout_resources/index.json" > "$url_index"
+if RUNALL_RESOURCE_INDEX="$url_index" RUNALL_FROZEN_RESOURCE_ROOT="$layout_resources" PATH="${tool_bin}:${PATH}" "${ROOT_DIR}/scripts/build-android" \
+  --spec "$layout_spec" --workspace "$layout_root" --output-dir "${TMPDIR}/url-resource-out"; then
+  log "external resource URL was accepted"
+  exit 1
+fi
+test "$(wc -l < "$MOCK_DART_LOG")" = "$dart_lines"
+abs_dir="${TMPDIR}/abs-resources"
+mkdir -p "$abs_dir"
+cp "$layout_resources/icon.bin" "$layout_resources/lang.ftl" "$abs_dir/"
+python3 - "$abs_dir/index.json" "$icon_ref" "$lang_ref" "$abs_dir/icon.bin" "$abs_dir/lang.ftl" <<'PY'
+import json, sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({sys.argv[2]: sys.argv[4], sys.argv[3]: sys.argv[5]}) + "\n")
+PY
+abs_caller="${TMPDIR}/abs-caller"
+mkdir -p "$abs_caller"
+(
+  cd "$abs_caller"
+  PATH="${tool_bin}:${PATH}" RUNALL_RESOURCE_INDEX="$abs_dir/index.json" "${ROOT_DIR}/scripts/build-android" \
+    --spec "$layout_spec" --workspace "$layout_root" --output-dir rel-unsigned
+)
+test -f "${abs_caller}/rel-unsigned/app-release.apk"
+test "$(wc -l < "$MOCK_DART_LOG")" -gt "$dart_lines"
+dart_lines="$(wc -l < "$MOCK_DART_LOG")"
+escape_dir="${TMPDIR}/escape-resources"
+mkdir -p "$escape_dir"
+cp "$layout_resources/lang.ftl" "$escape_dir/"
+python3 - "$escape_dir/index.json" "$icon_ref" "$lang_ref" "$layout_resources/icon.bin" "$escape_dir/lang.ftl" <<'PY'
+import json, sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({sys.argv[2]: sys.argv[4], sys.argv[3]: sys.argv[5]}) + "\n")
+PY
+if RUNALL_RESOURCE_INDEX="$escape_dir/index.json" PATH="${tool_bin}:${PATH}" "${ROOT_DIR}/scripts/build-android" \
+  --spec "$layout_spec" --workspace "$layout_root" --output-dir "${TMPDIR}/escape-out"; then
+  log "absolute resource path outside the index directory was accepted"
+  exit 1
+fi
+test ! -e "${TMPDIR}/escape-out/app-release.apk"
+test "$(wc -l < "$MOCK_DART_LOG")" = "$dart_lines"
+python3 - "$abs_dir/index.json" "$icon_ref" "$lang_ref" "$abs_dir" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[4])
+Path(sys.argv[1]).write_text(json.dumps({
+    sys.argv[2]: str(root / ".." / "icon.bin"),
+    sys.argv[3]: str(root / "lang.ftl"),
+}) + "\n")
+PY
+if RUNALL_RESOURCE_INDEX="$abs_dir/index.json" PATH="${tool_bin}:${PATH}" "${ROOT_DIR}/scripts/build-android" \
+  --spec "$layout_spec" --workspace "$layout_root" --output-dir "${TMPDIR}/dotdot-out"; then
+  log "parent segment in an absolute resource path was accepted"
+  exit 1
+fi
+test "$(wc -l < "$MOCK_DART_LOG")" = "$dart_lines"
+ln -s icon.bin "$abs_dir/icon-link.bin"
+python3 - "$abs_dir/index.json" "$icon_ref" "$lang_ref" "$abs_dir/icon-link.bin" "$abs_dir/lang.ftl" <<'PY'
+import json, sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({sys.argv[2]: sys.argv[4], sys.argv[3]: sys.argv[5]}) + "\n")
+PY
+if RUNALL_RESOURCE_INDEX="$abs_dir/index.json" PATH="${tool_bin}:${PATH}" "${ROOT_DIR}/scripts/build-android" \
+  --spec "$layout_spec" --workspace "$layout_root" --output-dir "${TMPDIR}/symlink-out"; then
+  log "symlinked frozen resource was accepted"
+  exit 1
+fi
+test "$(wc -l < "$MOCK_DART_LOG")" = "$dart_lines"
+staged_resources="${TMPDIR}/staged-resources"
+python3 - "$abs_dir/index.json" "$icon_ref" "$lang_ref" "$abs_dir/icon.bin" "$abs_dir/lang.ftl" <<'PY'
+import json, sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({sys.argv[2]: sys.argv[4], sys.argv[3]: sys.argv[5]}) + "\n")
+PY
+"${ROOT_DIR}/scripts/stage-frozen-resources" --spec "$layout_spec" --index "$abs_dir/index.json" --output "$staged_resources"
+python3 - "$staged_resources/index.json" <<'PY'
+import json, sys
+from pathlib import Path
+mapping = json.loads(Path(sys.argv[1]).read_text())
+if not mapping or any(value.startswith("/") or "://" in value or ".." in value for value in mapping.values()):
+    raise SystemExit("staged index did not use relative paths")
+for value in mapping.values():
+    if not (Path(sys.argv[1]).parent / value).is_file():
+        raise SystemExit("staged resource file missing")
+PY
+handoff_caller="${TMPDIR}/handoff-caller"
+mkdir -p "$handoff_caller"
+(
+  cd "$handoff_caller"
+  PATH="${tool_bin}:${PATH}" RUNALL_FROZEN_RESOURCE_ROOT="$staged_resources" "${ROOT_DIR}/scripts/build-android" \
+    --spec "$layout_spec" --workspace "$layout_root" --output-dir "${PWD}/unsigned"
+)
+test -f "${handoff_caller}/unsigned/app-release.apk"
+test ! -e "${ROOT_DIR}/unsigned/app-release.apk"
+if "${ROOT_DIR}/scripts/stage-frozen-resources" --spec "$layout_spec" --output "${TMPDIR}/missing-stage" >/dev/null 2>&1; then
+  log "missing authorized resource index was staged"
+  exit 1
+fi
+if MOCK_BAD_SETTINGS=1 RUNALL_FROZEN_RESOURCE_ROOT="$layout_resources" PATH="${tool_bin}:${PATH}" "${ROOT_DIR}/scripts/build-android" \
+  --spec "$layout_spec" --workspace "$layout_root" --output-dir "${TMPDIR}/bad-settings-out"; then
+  log "tampered build-settings were accepted"
+  exit 1
+fi
+unset MOCK_BAD_SETTINGS
 : > "$MOCK_FLUTTER_LOG"
 ios_spec="${TMPDIR}/layout-ios-spec.json"
 jq '.platform = "ios" | .targets = ["ipa"]' "$layout_spec" > "$ios_spec"
@@ -931,7 +1123,7 @@ ios_caller="${TMPDIR}/ios-caller"
 mkdir -p "$ios_caller"
 (
   cd "$ios_caller"
-  PATH="${tool_bin}:${PATH}" "${ROOT_DIR}/scripts/build-ios" \
+  PATH="${tool_bin}:${PATH}" RUNALL_FROZEN_RESOURCE_ROOT="$layout_resources" "${ROOT_DIR}/scripts/build-ios" \
     --spec "$ios_spec" --workspace "$layout_root" --output-dir rel-unsigned
 )
 test -f "${ios_caller}/rel-unsigned/Runner.app.tar"
@@ -942,13 +1134,21 @@ test -L "${TMPDIR}/ios-roundtrip/Runner.app/Frameworks/Demo.framework/DemoLink"
 test "$(stat -c '%a' "${TMPDIR}/ios-roundtrip/Runner.app/Frameworks/Demo.framework/Demo")" = "755"
 grep -q -- '--no-codesign' "$MOCK_FLUTTER_LOG"
 grep -q -- '--build-name 1.2.3' "$MOCK_FLUTTER_LOG"
-python3 - "${layout_root}/apps/rigel/ios/Flutter/Release.xcconfig" <<'PY'
+python3 - "${layout_root}/apps/rigel/ios/Flutter/Release.xcconfig" "${layout_root}/apps/rigel/ios/Flutter/Branded.xcconfig" "${layout_root}/apps/rigel/ios/Runner/Info.plist" <<'PY'
+import plistlib, sys
 from pathlib import Path
-import sys
-text = Path(sys.argv[1]).read_text()
-if "IOS_BUNDLE_ID=com.example.contract" not in text:
-    raise SystemExit("frozen bundle id was not applied")
+release, branded, info_path = map(Path, sys.argv[1:])
+if release.read_text() != "IOS_BUNDLE_ID=com.aiyin.rigel\n":
+    raise SystemExit("Release.xcconfig was rewritten instead of using the overlay")
+text = branded.read_text()
+if "IOS_BUNDLE_ID=com.example.contract\n" not in text or "APP_DISPLAY_NAME=Contract\n" not in text:
+    raise SystemExit("frozen Branded.xcconfig was not applied")
+info = plistlib.loads(info_path.read_bytes())
+if info.get("CFBundleDisplayName") != "Rigel":
+    raise SystemExit("Info.plist display name was hardcoded")
 PY
+grep -q 'ENV IOS_BUNDLE_ID=com.example.contract' "$MOCK_FLUTTER_LOG"
+grep -q 'ENV APP_DISPLAY_NAME=Contract' "$MOCK_FLUTTER_LOG"
 
 log "contract: upload rejects a mismatched grant, failed PUT, and failed complete"
 upload_cases="${TMPDIR}/upload-cases"
@@ -1163,5 +1363,10 @@ for name in names:
     if git_hash("blob", current) != blob_sha:
         raise SystemExit(f"pinned {name} does not match the file at HEAD")
 PY
+
+if [[ -n "${ORION_ROOT:-}" && -n "${COSMOS_ROOT:-}" ]]; then
+  log "contract: cross-repo frozen generator and Mercury schema"
+  ORION_ROOT="$ORION_ROOT" COSMOS_ROOT="$COSMOS_ROOT" "${ROOT_DIR}/scripts/tests/cross-repo-contract.sh"
+fi
 
 log "all contract tests passed"

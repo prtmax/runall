@@ -19,7 +19,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-prepare.yml@03ca65293300edc9c488c17e9cd01e3463673f87
+    uses: prtmax/runall/.github/workflows/reusable-prepare.yml@747d3de36733bcae80b6319bb6ef6de217256282
     with:
       build_run_id: ${{ inputs.build_run_id }}
     secrets:
@@ -51,6 +51,12 @@ jobs:
           name: source-workspace-${{ inputs.build_run_id }}
           path: packed
 
+      - name: Download frozen resources
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
+        with:
+          name: frozen-resources-${{ inputs.build_run_id }}
+          path: frozen-resources
+
       - name: Unpack source workspace
         shell: bash
         run: |
@@ -75,7 +81,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p unsigned
-          ./scripts/build-android --spec build-spec.json --workspace workspace --output-dir unsigned
+          export RUNALL_FROZEN_RESOURCE_ROOT="${PWD}/frozen-resources"
+          test -f "${RUNALL_FROZEN_RESOURCE_ROOT}/index.json"
+          ./scripts/build-android --spec build-spec.json --workspace workspace --output-dir "${PWD}/unsigned"
 
       - name: Upload unsigned artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -141,6 +149,12 @@ jobs:
           name: source-workspace-${{ inputs.build_run_id }}
           path: packed
 
+      - name: Download frozen resources
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
+        with:
+          name: frozen-resources-${{ inputs.build_run_id }}
+          path: frozen-resources
+
       - name: Unpack source workspace
         shell: bash
         run: |
@@ -159,7 +173,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p unsigned
-          ./scripts/build-ios --spec build-spec.json --workspace workspace --output-dir unsigned
+          export RUNALL_FROZEN_RESOURCE_ROOT="${PWD}/frozen-resources"
+          test -f "${RUNALL_FROZEN_RESOURCE_ROOT}/index.json"
+          ./scripts/build-ios --spec build-spec.json --workspace workspace --output-dir "${PWD}/unsigned"
 
       - name: Upload unsigned app
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

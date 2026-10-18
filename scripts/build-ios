@@ -48,50 +48,27 @@ if [[ "$platform" != "ios" ]]; then
   log "build-ios requires platform ios"
   exit 1
 fi
-bundle_id="$(json_get "$SPEC" '.config.app.bundleId')"
-display_name="$(json_get "$SPEC" '.config.app.displayName')"
-version_name="$(json_get "$SPEC" '.config.app.versionName')"
-version_code="$(read_app_version_code "$SPEC")"
-assert_non_empty "bundleId" "$bundle_id"
-assert_non_empty "displayName" "$display_name"
-
 info_plist="${APP_DIR}/ios/Runner/Info.plist"
 if [[ ! -f "$info_plist" ]]; then
   log "ios Info.plist missing"
   exit 1
 fi
-python3 - "$info_plist" "$display_name" <<'PY'
-import plistlib, sys
-from pathlib import Path
-path = Path(sys.argv[1])
-info = plistlib.loads(path.read_bytes())
-info["CFBundleDisplayName"] = sys.argv[2]
-info["CFBundleName"] = sys.argv[2]
-path.write_bytes(plistlib.dumps(info))
-PY
-release_xcconfig="${APP_DIR}/ios/Flutter/Release.xcconfig"
-if [[ -f "$release_xcconfig" ]]; then
-  python3 - "$release_xcconfig" "$bundle_id" <<'PY'
-import sys
-from pathlib import Path
-path, bundle = Path(sys.argv[1]), sys.argv[2]
-lines = []
-seen = False
-for line in path.read_text().splitlines():
-    if line.startswith("IOS_BUNDLE_ID="):
-        lines.append(f"IOS_BUNDLE_ID={bundle}")
-        seen = True
-    else:
-        lines.append(line)
-if not seen:
-    lines.append(f"IOS_BUNDLE_ID={bundle}")
-path.write_text("\n".join(lines) + "\n")
-PY
-fi
 
 gen_dir="${APP_DIR}/.runall/release-build"
 generate_frozen_release "$gen_dir"
+bundle_id="$FROZEN_BUNDLE_ID"
+display_name="$FROZEN_DISPLAY_NAME"
+version_name="$FROZEN_VERSION_NAME"
+version_code="$FROZEN_VERSION_CODE"
+assert_non_empty "bundleId" "$bundle_id"
+assert_non_empty "displayName" "$display_name"
+branded="${APP_DIR}/ios/Flutter/Branded.xcconfig"
+if [[ ! -f "$branded" ]]; then
+  log "frozen Branded.xcconfig missing"
+  exit 1
+fi
 export IOS_BUNDLE_ID="$bundle_id"
+export APP_DISPLAY_NAME="$display_name"
 (cd "$APP_DIR" && "$RUNALL_FLUTTER" pub get)
 (cd "$APP_DIR" && "$RUNALL_FLUTTER" build ios --release --no-codesign \
   --build-name "$version_name" --build-number "$version_code" \

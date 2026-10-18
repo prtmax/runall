@@ -1,0 +1,14 @@
+tree 0789b3811eaf0cb56a0f371addabb74957fb2889
+parent 4be3a5f65249263e2d60f85c7f9836ad0803a754
+author 0xfe10 <0xfe10@proton.me> 1792289767 +0000
+committer 0xfe10 <0xfe10@proton.me> 1792289767 +0000
+gpgsig -----BEGIN SSH SIGNATURE-----
+ U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgdwYsAzDgJTlSC/8dOXaKyRU4qn
+ R7D8MCEB9Mn7ycMGQAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5
+ AAAAQN+AvaJDCmKy+yMHhiZmEHBaNcmLino0lhoUfJB1rc4lA1n5BfcDOJd9/UD9DRDs+K
+ xMJPznliiZmJaN7B3lmAY=
+ -----END SSH SIGNATURE-----
+
+Pass authorized frozen resources into unsigned compile jobs.
+
+Accept absolute resource paths that stay inside the index directory, stage those bytes as relative files, and upload them for the compile job without giving it credentials.

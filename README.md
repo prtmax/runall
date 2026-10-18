@@ -49,7 +49,7 @@ this repository. Missing material or tools fail the job; they do not produce a d
 | `scripts/load-build-spec` | Fetch or load local frozen spec + validation |
 | `scripts/checkout-source` | Prepare-only clone of a direct Orion repo or a Cosmos checkout with its Orion submodule. Token is a per-command header, never a remote URL |
 | `scripts/ensure-flutter` | Install the Flutter SDK pinned by `config.orion.toolchainVersion` and `.fvmrc` |
-| `scripts/build-android` | Unsigned Flutter APK/AAB from frozen Orion generator output |
+| `scripts/build-android` | Unsigned Flutter APK/AAB from the frozen Orion generator (`SPEC OUTPUT RESOURCE_INDEX`), overlay, and build-settings |
 | `scripts/sign-android` | Sign APK, verify package, version, and cert fingerprint |
 | `scripts/sign-aab` | Sign AAB with jarsigner, verify version and cert fingerprint |
 | `scripts/build-ios` | Unsigned iOS Runner.app from frozen Orion generator output, packed as a tar so symlinks survive upload |
@@ -57,10 +57,18 @@ this repository. Missing material or tools fail the job; they do not produce a d
 | `scripts/upload-artifacts` | Authorize with `byteSize`, PUT only to the granted https URL, then call artifact complete |
 | `scripts/report-result` | Attempt progress / terminal status callback |
 
+Frozen brand and language bytes are not fetched from `ref` URLs. Prepare copies an authorized local index with `scripts/stage-frozen-resources` and uploads `frozen-resources-<build_run_id>`. Paths in that index may be absolute or relative to the index file, and must stay inside its directory; URLs, `..`, and symlinks are rejected. The compile job downloads only that artifact, sets `RUNALL_FROZEN_RESOURCE_ROOT` to its absolute path, and does not receive OIDC, platform credentials, or signing keys. Digests are checked again before `generate_release_build.dart`. Android reads `ANDROID_APPLICATION_ID` and `APP_DISPLAY_NAME` from `build-settings.json`; iOS uses the overlay `Branded.xcconfig`. Mercury does not yet expose a brand/language byte route, so a runner without the authorized index fails in prepare instead of compiling.
+
 Local contract tests (no network):
 
 ```bash
 ./scripts/tests/run-contract-tests.sh
+```
+
+With the pinned Orion and Cosmos checkouts available, the cross-repo check also runs the real generator and compares the Mercury upload schema:
+
+```bash
+ORION_ROOT=/path/to/orion COSMOS_ROOT=/path/to/cosmos ./scripts/tests/cross-repo-contract.sh
 ```
 
 ## Repository secrets (runner configuration)
