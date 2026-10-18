@@ -5,6 +5,7 @@ or relative to the index file, but the resolved file must stay inside the index
 directory. URLs, parent segments, and symlinks are rejected.
 """
 
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -76,6 +77,109 @@ def locate_resource(index_path, raw):
 
 def digest_bytes(data):
     return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+MAX_PACKAGING_RESOURCES = 52
+MAX_PACKAGING_BYTES = 36 * 1024 * 1024
+PACKAGING_CONTENT_TYPES = {"image/png", "text/plain; charset=utf-8"}
+PACKAGING_FIELDS = {"ref", "digest", "contentType", "contentBase64"}
+
+
+def split_resources(spec):
+    studio = {}
+    legacy = {}
+    for ref, digest in required_resources(spec).items():
+        if ref.startswith("app-studio/"):
+            studio[ref] = digest
+        else:
+            legacy[ref] = digest
+    return studio, legacy
+
+
+def spec_requests_studio(spec_path):
+    studio, _legacy = split_resources(load_json(spec_path))
+    return bool(studio)
+
+
+def decode_packaging_resources(payload, studio):
+    """Decode the prepare-only packaging response and recompute every digest.
+
+    The payload is not a path list. Only refs already frozen in the spec are
+    accepted, and the decoded bytes must hash to that spec digest.
+    """
+    if not isinstance(payload, list) or len(payload) != len(studio) or len(payload) > MAX_PACKAGING_RESOURCES:
+        fail("packaging resources do not match the frozen spec")
+    decoded = {}
+    total = 0
+    encoded_limit = (MAX_PACKAGING_BYTES // 3) * 4 + 4
+    for item in payload:
+        if not isinstance(item, dict) or set(item) - PACKAGING_FIELDS:
+            fail("packaging resource is invalid")
+        ref, digest = item.get("ref"), item.get("digest")
+        content_type, encoded = item.get("contentType"), item.get("contentBase64")
+        if not isinstance(ref, str) or studio.get(ref) != digest:
+            fail("packaging resource ref is not in the frozen spec")
+        if content_type not in PACKAGING_CONTENT_TYPES:
+            fail("packaging resource content type rejected")
+        if not isinstance(encoded, str) or encoded == "" or len(encoded) > encoded_limit:
+            fail("packaging resource payload rejected")
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError):
+            fail("packaging resource payload rejected")
+        total += len(data)
+        if len(data) == 0 or total > MAX_PACKAGING_BYTES:
+            fail("packaging resource payload rejected")
+        if digest_bytes(data) != digest:
+            fail(f"packaging resource digest mismatch: {ref}")
+        if ref in decoded:
+            fail("packaging resource ref repeated")
+        decoded[ref] = data
+    if set(decoded) != set(studio):
+        fail("packaging resources do not match the frozen spec")
+    return decoded
+
+
+def verified_legacy(index_path, legacy):
+    index_path, mapping = load_index(index_path)
+    if set(mapping) != set(legacy):
+        fail("resource index refs do not match the frozen spec")
+    files = {}
+    for ref, digest in legacy.items():
+        data = locate_resource(index_path, mapping[ref]).read_bytes()
+        if digest_bytes(data) != digest:
+            fail(f"frozen resource digest mismatch: {ref}")
+        files[ref] = data
+    return files
+
+
+def write_resource_index(dest, files):
+    dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    if any(dest.iterdir()):
+        fail("packaging resource output is not empty")
+    staged = {}
+    for ref, data in files.items():
+        name = staged_name(ref)
+        target = dest / name
+        if target.exists() or target.is_symlink():
+            fail("packaging resource output path rejected")
+        target.write_bytes(data)
+        staged[ref] = name
+    (dest / "index.json").write_text(json.dumps(staged, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def materialize_packaging_response(spec_path, response_path, dest, legacy_index=""):
+    spec = load_json(spec_path)
+    studio, legacy = split_resources(spec)
+    if not studio:
+        fail("spec has no App Studio resources")
+    files = decode_packaging_resources(load_json(response_path), studio)
+    if legacy:
+        if not legacy_index:
+            fail("authorized frozen resource index is missing")
+        files.update(verified_legacy(legacy_index, legacy))
+    write_resource_index(dest, files)
 
 
 def staged_name(ref):

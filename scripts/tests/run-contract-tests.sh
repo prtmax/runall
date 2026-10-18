@@ -251,10 +251,15 @@ if "frozen-resources-${{ inputs.build_run_id }}" not in job or "frozen-resources
 if "RUNALL_FROZEN_RESOURCE_ROOT=\"${PWD}/frozen-resources\"" not in job or "RUNALL_FROZEN_RESOURCE_ROOT=\"${PWD}/frozen-resources\"" not in ios:
     raise SystemExit("compile job does not point at the downloaded frozen resources")
 prepare = open(sys.argv[1].replace("android-build.yml", "reusable-prepare.yml"), encoding="utf-8").read()
-if "stage-frozen-resources" not in prepare or "frozen-resources-${{ inputs.build_run_id }}" not in prepare:
-    raise SystemExit("prepare does not stage and upload frozen resources")
+if "fetch-packaging-resources" not in prepare or "stage-frozen-resources" not in prepare or "frozen-resources-${{ inputs.build_run_id }}" not in prepare:
+    raise SystemExit("prepare does not fetch and stage frozen resources")
 if "id-token: write" not in prepare:
     raise SystemExit("prepare lost its OIDC permission")
+if "COSMOS_BUILD_SPEC_URL" not in prepare:
+    raise SystemExit("prepare cannot reach packaging resources")
+for forbidden in ("fetch-packaging-resources", "COSMOS_BUILD_SPEC_URL", "COSMOS_BUILD_CREDENTIAL", "packaging-resources"):
+    if forbidden in job or forbidden in ios:
+        raise SystemExit(f"compile job can read prepare packaging resources via {forbidden}")
 if "upstream_result" not in text:
     raise SystemExit("finalize is not wired to upstream failure")
 if "run-name: cosmos-build-${{ inputs.build_run_id }}" not in text:
@@ -1238,6 +1243,155 @@ if grep -q '/complete' "${TMPDIR}/case.log"; then
 fi
 if PATH="${upload_cases}:${PATH}" MOCK_UPLOAD_MODE=complete-fail MOCK_UPLOAD_LOG="${TMPDIR}/case.log" MOCK_UPLOAD_ARTIFACT="${upload_cases}/app.apk" MOCK_UPLOAD_TARGET=apk COSMOS_BUILD_ARTIFACT_UPLOAD_URL="https://example.test/internal" COSMOS_BUILD_CREDENTIAL="test-credential" BUILD_RUN_ID="run-contract-test" "${ROOT_DIR}/scripts/upload-artifacts" --spec "$layout_spec" --artifact "${upload_cases}/app.apk" --target apk; then
   log "complete failure was reported as success"
+  exit 1
+fi
+
+log "contract: prepare fetches App Studio resources and recomputes digests"
+packaging_case="${TMPDIR}/packaging"
+mkdir -p "$packaging_case/legacy"
+printf 'legacy-language' > "$packaging_case/legacy/lang.ftl"
+printf 'studio-icon' > "$packaging_case/icon.bin"
+studio_icon_digest="sha256:$(sha256_file "$packaging_case/icon.bin")"
+legacy_lang_digest="sha256:$(sha256_file "$packaging_case/legacy/lang.ftl")"
+legacy_ref="$(jq -r '.config.languages[0].ref' "$FIXTURE")"
+jq -n --arg ref "$legacy_ref" '{($ref): "lang.ftl"}' > "$packaging_case/legacy/index.json"
+studio_spec="${packaging_case}/spec.json"
+jq --arg icon "$studio_icon_digest" --arg lang "$legacy_lang_digest" --arg lang_ref "$legacy_ref" \
+  '.config.brandAssets = [{"kind":"logo","ref":"app-studio/logo-variant/42","digest":$icon},{"kind":"splash","ref":"app-studio/logo-variant/42","digest":$icon}] | .config.languages[0].ref = $lang_ref | .config.languages[0].digest = $lang' \
+  "$FIXTURE" > "$studio_spec"
+studio_hash="$(compute_spec_hash "$studio_spec")"
+jq --arg hash "$studio_hash" '.specHash = $hash' "$studio_spec" > "${studio_spec}.hashed"
+mv "${studio_spec}.hashed" "$studio_spec"
+python3 - "$packaging_case/icon.bin" "$packaging_case/response.json" "$studio_icon_digest" <<'PY'
+import base64, json, pathlib, sys
+data = pathlib.Path(sys.argv[1]).read_bytes()
+pathlib.Path(sys.argv[2]).write_text(json.dumps([{
+    "ref": "app-studio/logo-variant/42",
+    "digest": sys.argv[3],
+    "contentType": "image/png",
+    "contentBase64": base64.b64encode(data).decode("ascii"),
+}]), encoding="utf-8")
+PY
+COSMOS_BUILD_PACKAGING_RESOURCES_FILE="$packaging_case/response.json" \
+  RUNALL_FROZEN_RESOURCE_ROOT="$packaging_case/legacy" \
+  "${ROOT_DIR}/scripts/fetch-packaging-resources" \
+  --spec "$studio_spec" --output "$packaging_case/studio"
+python3 - "$packaging_case/studio/index.json" "$packaging_case/studio" "$packaging_case/icon.bin" "$packaging_case/legacy/lang.ftl" "$legacy_ref" <<'PY'
+import json, pathlib, sys
+index_path, root, icon, lang = map(pathlib.Path, sys.argv[1:5])
+legacy_ref = sys.argv[5]
+mapping = json.loads(index_path.read_text(encoding="utf-8"))
+if set(mapping) != {"app-studio/logo-variant/42", legacy_ref}:
+    raise SystemExit(f"unexpected index refs: {sorted(mapping)}")
+if (root / mapping["app-studio/logo-variant/42"]).read_bytes() != icon.read_bytes():
+    raise SystemExit("studio bytes were not decoded")
+if (root / mapping[legacy_ref]).read_bytes() != lang.read_bytes():
+    raise SystemExit("legacy resource was not copied from the authorized index")
+if "contentBase64" in index_path.read_text(encoding="utf-8"):
+    raise SystemExit("raw packaging response was retained")
+PY
+"${ROOT_DIR}/scripts/stage-frozen-resources" --spec "$studio_spec" --index "$packaging_case/studio/index.json" --output "$packaging_case/staged"
+python3 - "$studio_spec" "$packaging_case/staged/index.json" "${ROOT_DIR}/scripts/lib" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[3])
+import frozen_resources
+spec = json.loads(open(sys.argv[1], encoding="utf-8").read())
+rows = list(frozen_resources.iter_verified(spec, sys.argv[2]))
+if {ref for ref, _data in rows} != set(frozen_resources.required_resources(spec)):
+    raise SystemExit("staged index does not cover the frozen spec")
+PY
+bad_response="${packaging_case}/bad.json"
+python3 - "$packaging_case/response.json" "$bad_response" <<'PY'
+import json, pathlib, sys
+body = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+body[0]["contentBase64"] = body[0]["contentBase64"][:-2] + ("AQ" if not body[0]["contentBase64"].endswith("AQ") else "BA")
+body[0]["password"] = "secret-value"
+pathlib.Path(sys.argv[2]).write_text(json.dumps(body), encoding="utf-8")
+PY
+if COSMOS_BUILD_PACKAGING_RESOURCES_FILE="$bad_response" RUNALL_FROZEN_RESOURCE_ROOT="$packaging_case/legacy" \
+  "${ROOT_DIR}/scripts/fetch-packaging-resources" --spec "$studio_spec" --output "$packaging_case/rejected" >/dev/null 2>&1; then
+  log "tampered packaging resource or secret field was accepted"
+  exit 1
+fi
+if [[ -d "$packaging_case/rejected" ]]; then
+  log "rejected packaging response left an output directory"
+  exit 1
+fi
+printf 'studio-only' > "$packaging_case/only.bin"
+only_digest="sha256:$(sha256_file "$packaging_case/only.bin")"
+only_ref="app-studio/language/$(printf '%s' "${only_digest#sha256:}")"
+only_spec="${packaging_case}/only-spec.json"
+jq --arg digest "$only_digest" --arg ref "$only_ref" \
+  '.config.brandAssets[0].ref = $ref | .config.brandAssets[0].digest = $digest | .config.languages[0].ref = $ref | .config.languages[0].digest = $digest' \
+  "$FIXTURE" > "$only_spec"
+only_hash="$(compute_spec_hash "$only_spec")"
+jq --arg hash "$only_hash" '.specHash = $hash' "$only_spec" > "${only_spec}.hashed"
+mv "${only_spec}.hashed" "$only_spec"
+python3 - "$packaging_case/only.bin" "$packaging_case/only-response.json" "$only_ref" "$only_digest" <<'PY'
+import base64, json, pathlib, sys
+pathlib.Path(sys.argv[2]).write_text(json.dumps([{
+    "ref": sys.argv[3], "digest": sys.argv[4], "contentType": "text/plain; charset=utf-8",
+    "contentBase64": base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode("ascii"),
+}]), encoding="utf-8")
+PY
+cat > "$packaging_case/curl" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+out=""
+auth=""
+url=""
+prev=""
+for arg in "$@"; do
+  if [[ "$prev" == "--output" ]]; then out="$arg"; fi
+  if [[ "$arg" == Authorization:* ]]; then auth="$arg"; fi
+  if [[ "$arg" == https://* || "$arg" == http://* ]]; then url="$arg"; fi
+  prev="$arg"
+done
+printf '%s\n%s\n' "$url" "$auth" >> "${MOCK_PACKAGING_LOG:?}"
+if [[ "${MOCK_PACKAGING_MODE:-ok}" != "ok" ]]; then
+  printf 'secret-body' > "$out"
+  printf '403'
+  exit 0
+fi
+cp "${MOCK_PACKAGING_BODY:?}" "$out"
+printf '200'
+MOCK
+chmod +x "$packaging_case/curl"
+: > "$packaging_case/http.log"
+PATH="$packaging_case:${PATH}" \
+  MOCK_PACKAGING_MODE=ok \
+  MOCK_PACKAGING_LOG="$packaging_case/http.log" \
+  MOCK_PACKAGING_BODY="$packaging_case/only-response.json" \
+  COSMOS_BUILD_SPEC_URL="https://mercury.example.test/api/runtime/v1/internal/build-runs" \
+  COSMOS_BUILD_CREDENTIAL="prepare-credential-not-for-compile" \
+  BUILD_RUN_ID="run-contract-test" \
+  "${ROOT_DIR}/scripts/fetch-packaging-resources" --spec "$only_spec" --output "$packaging_case/http-out" --run-id run-contract-test
+grep -qx 'https://mercury.example.test/api/runtime/v1/internal/build-runs/run-contract-test/packaging-resources' "$packaging_case/http.log"
+grep -qx 'Authorization: Bearer prepare-credential-not-for-compile' "$packaging_case/http.log"
+if grep -R -q 'prepare-credential-not-for-compile' "$packaging_case/http-out"; then
+  log "prepare credential was written into packaging resources"
+  exit 1
+fi
+if PATH="$packaging_case:${PATH}" MOCK_PACKAGING_MODE=deny MOCK_PACKAGING_LOG="$packaging_case/http-deny.log" MOCK_PACKAGING_BODY="$packaging_case/only-response.json" \
+  COSMOS_BUILD_SPEC_URL="https://mercury.example.test/api/runtime/v1/internal/build-runs" \
+  COSMOS_BUILD_CREDENTIAL="prepare-credential-not-for-compile" BUILD_RUN_ID="run-contract-test" \
+  "${ROOT_DIR}/scripts/fetch-packaging-resources" --spec "$only_spec" --output "$packaging_case/denied" >/dev/null 2>&1; then
+  log "failed packaging resource request was accepted"
+  exit 1
+fi
+if [[ -d "$packaging_case/denied" ]] || grep -q 'secret-body' "$packaging_case/http-out/index.json"; then
+  log "failed packaging response was retained"
+  exit 1
+fi
+if COSMOS_BUILD_PACKAGING_RESOURCES_FILE="$packaging_case/response.json" \
+  "${ROOT_DIR}/scripts/fetch-packaging-resources" --spec "$FIXTURE" --output "$packaging_case/unused"; then
+  :
+else
+  log "legacy spec tried to fetch App Studio resources"
+  exit 1
+fi
+if [[ -e "$packaging_case/unused" ]]; then
+  log "legacy spec created a packaging output"
   exit 1
 fi
 

@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Prepare-only fetch of public App Studio bytes named by the frozen spec.
+# Compile and sign jobs must not call this script or receive its credential.
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/common.sh
+source "${ROOT_DIR}/scripts/lib/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: fetch-packaging-resources --spec <path> --output <dir> [--index <path>]
+
+When the spec names app-studio/* resources, download
+${COSMOS_BUILD_SPEC_URL%/}/${BUILD_RUN_ID}/packaging-resources with the prepare
+credential already in the environment. Decode only those spec refs, recompute
+SHA-256, and write a local index. Non-studio refs are copied from the authorized
+local index. Specs without app-studio refs do nothing.
+
+Local contract tests may set COSMOS_BUILD_PACKAGING_RESOURCES_FILE instead of HTTP.
+The raw response is removed after verification. This script never prints it.
+EOF
+}
+
+SPEC=""
+OUTPUT=""
+INDEX="${RUNALL_RESOURCE_INDEX:-}"
+RUN_ID="${BUILD_RUN_ID:-}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --spec) SPEC="$2"; shift 2 ;;
+    --output) OUTPUT="$2"; shift 2 ;;
+    --index) INDEX="$2"; shift 2 ;;
+    --run-id) RUN_ID="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) log "unknown argument: $1"; usage; exit 1 ;;
+  esac
+done
+
+assert_non_empty "--spec" "$SPEC"
+assert_non_empty "--output" "$OUTPUT"
+validate_build_spec_document "$SPEC"
+
+if [[ -z "$INDEX" && -n "${RUNALL_FROZEN_RESOURCE_ROOT:-}" ]]; then
+  INDEX="${RUNALL_FROZEN_RESOURCE_ROOT%/}/index.json"
+fi
+
+needs_studio="$(python3 - "$SPEC" "${ROOT_DIR}/scripts/lib" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[2])
+from frozen_resources import spec_requests_studio
+print("yes" if spec_requests_studio(sys.argv[1]) else "no")
+PY
+)"
+if [[ "$needs_studio" != "yes" ]]; then
+  log "spec has no App Studio packaging resources"
+  exit 0
+fi
+
+response="$(mktemp)"
+cleanup() {
+  rm -f "$response"
+}
+trap cleanup EXIT
+
+if [[ -n "${COSMOS_BUILD_PACKAGING_RESOURCES_FILE:-}" ]]; then
+  cp "${COSMOS_BUILD_PACKAGING_RESOURCES_FILE}" "$response"
+else
+  assert_non_empty "COSMOS_BUILD_SPEC_URL" "${COSMOS_BUILD_SPEC_URL:-}"
+  assert_non_empty "COSMOS_BUILD_CREDENTIAL" "${COSMOS_BUILD_CREDENTIAL:-}"
+  assert_non_empty "BUILD_RUN_ID" "$RUN_ID"
+  require_cmd curl
+  url="${COSMOS_BUILD_SPEC_URL%/}/${RUN_ID}/packaging-resources"
+  code="$(curl --silent --show-error --retry 3 --output "$response" --write-out '%{http_code}' \
+    -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
+    -H 'Accept: application/json' \
+    "$url" || true)"
+  if [[ "$code" != "200" ]]; then
+    log "packaging resources request failed: HTTP ${code:-transport}"
+    exit 1
+  fi
+fi
+
+python3 - "$SPEC" "$response" "$OUTPUT" "$INDEX" "${ROOT_DIR}/scripts/lib" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[5])
+from frozen_resources import materialize_packaging_response
+
+materialize_packaging_response(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
+PY
+log "App Studio packaging resources verified"
