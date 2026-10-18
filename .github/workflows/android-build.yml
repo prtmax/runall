@@ -19,7 +19,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-prepare.yml@03ca65293300edc9c488c17e9cd01e3463673f87
+    uses: prtmax/runall/.github/workflows/reusable-prepare.yml@747d3de36733bcae80b6319bb6ef6de217256282
     with:
       build_run_id: ${{ inputs.build_run_id }}
     secrets:
