@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib/common.sh
 source "${ROOT_DIR}/scripts/lib/common.sh"
+# shellcheck source=scripts/lib/android_signing.sh
+source "${ROOT_DIR}/scripts/lib/android_signing.sh"
 
 usage() {
   cat <<'EOF'
@@ -58,37 +60,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-keystore="$tmpdir/keystore.jks"
-if [[ -n "${ANDROID_KEYSTORE_PATH:-}" ]]; then
-  cp "${ANDROID_KEYSTORE_PATH}" "$keystore"
-  ks_pass="${ANDROID_KEYSTORE_PASSWORD:-}"
-  alias_name="${ANDROID_KEY_ALIAS:-}"
-else
-  assert_non_empty "COSMOS_BUILD_SIGN_MATERIAL_URL" "${COSMOS_BUILD_SIGN_MATERIAL_URL:-}"
-  assert_non_empty "COSMOS_BUILD_CREDENTIAL" "${COSMOS_BUILD_CREDENTIAL:-}"
-  assert_non_empty "BUILD_RUN_ID" "${BUILD_RUN_ID:-}"
-  require_cmd curl
-  curl --fail-with-body -sS \
-    -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
-    "${COSMOS_BUILD_SIGN_MATERIAL_URL%/}/build-runs/${BUILD_RUN_ID}/android-signing" \
-    > "$tmpdir/material.json"
-  base64 -d <<< "$(jq -r '.keystoreBase64' "$tmpdir/material.json")" > "$keystore"
-  ks_pass="$(jq -r '.keystorePassword' "$tmpdir/material.json")"
-  alias_name="$(jq -r '.keyAlias' "$tmpdir/material.json")"
-  if [[ -z "$EXPECTED_FINGERPRINT" ]]; then
-    EXPECTED_FINGERPRINT="$(jq -r '.certificateSha256 // empty' "$tmpdir/material.json")"
-  fi
-fi
-
-assert_non_empty "keystore alias" "$alias_name"
-assert_non_empty "keystore password" "$ks_pass"
+prepare_android_signing "$SPEC" aab "$tmpdir"
 require_sign_receipt_fields "$package_name" "$expected_version_name" "$expected_version_code" "$EXPECTED_FINGERPRINT"
 EXPECTED_FINGERPRINT="$(normalize_sha256 "$EXPECTED_FINGERPRINT")"
 
 require_cmd jarsigner
 cp "$INPUT" "$OUTPUT"
 jarsigner -sigalg SHA256withRSA -digestalg SHA-256 \
-  -keystore "$keystore" -storepass "$ks_pass" \
+  -keystore "$keystore" \
+  -storepass:file "${tmpdir}/store.pass" \
+  -keypass:file "${tmpdir}/key.pass" \
   "$OUTPUT" "$alias_name"
 
 jarsigner -verify "$OUTPUT"
