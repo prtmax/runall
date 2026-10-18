@@ -49,7 +49,7 @@ this repository. Missing material or tools fail the job; they do not produce a d
 | `scripts/load-build-spec` | Fetch or load local frozen spec + validation |
 | `scripts/checkout-source` | Prepare-only clone of a direct Orion repo or a Cosmos checkout with its Orion submodule. Token is a per-command header, never a remote URL |
 | `scripts/ensure-flutter` | Install the Flutter SDK pinned by `config.orion.toolchainVersion` and `.fvmrc` |
-| `scripts/build-android` | Unsigned Flutter APK/AAB from frozen Orion generator output |
+| `scripts/build-android` | Unsigned Flutter APK/AAB from the frozen Orion generator (`SPEC OUTPUT RESOURCE_INDEX`), overlay, and build-settings |
 | `scripts/sign-android` | Sign APK, verify package, version, and cert fingerprint |
 | `scripts/sign-aab` | Sign AAB with jarsigner, verify version and cert fingerprint |
 | `scripts/build-ios` | Unsigned iOS Runner.app from frozen Orion generator output, packed as a tar so symlinks survive upload |
@@ -57,10 +57,18 @@ this repository. Missing material or tools fail the job; they do not produce a d
 | `scripts/upload-artifacts` | Authorize with `byteSize`, PUT only to the granted https URL, then call artifact complete |
 | `scripts/report-result` | Attempt progress / terminal status callback |
 
+Frozen brand and language bytes are not fetched from `ref` URLs. Stage them beside the spec in `frozen-resources/index.json` (ref to a relative path) or set `RUNALL_FROZEN_RESOURCE_ROOT` / `RUNALL_RESOURCE_INDEX`. Digests are checked before `generate_release_build.dart`, and the overlay is copied into `apps/rigel` before compile. Android reads `ANDROID_APPLICATION_ID` and `APP_DISPLAY_NAME` from `build-settings.json`; iOS uses the overlay `Branded.xcconfig`.
+
 Local contract tests (no network):
 
 ```bash
 ./scripts/tests/run-contract-tests.sh
+```
+
+With the pinned Orion and Cosmos checkouts available, the cross-repo check also runs the real generator and compares the Mercury upload schema:
+
+```bash
+ORION_ROOT=/path/to/orion COSMOS_ROOT=/path/to/cosmos ./scripts/tests/cross-repo-contract.sh
 ```
 
 ## Repository secrets (runner configuration)

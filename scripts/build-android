@@ -48,17 +48,18 @@ if [[ "$platform" != "android" ]]; then
   log "build-android requires platform android"
   exit 1
 fi
-application_id="$(json_get "$SPEC" '.config.app.applicationId')"
-version_name="$(json_get "$SPEC" '.config.app.versionName')"
-version_code="$(read_app_version_code "$SPEC")"
-assert_non_empty "applicationId" "$application_id"
 targets="$(json_get "$SPEC" '.targets | join(",")')"
 
 gen_dir="${APP_DIR}/.runall/release-build"
 generate_frozen_release "$gen_dir"
+application_id="$FROZEN_APPLICATION_ID"
+version_name="$FROZEN_VERSION_NAME"
+version_code="$FROZEN_VERSION_CODE"
+assert_non_empty "applicationId" "$application_id"
+export ANDROID_APPLICATION_ID="$application_id"
+export APP_DISPLAY_NAME="$FROZEN_DISPLAY_NAME"
 (cd "$APP_DIR" && "$RUNALL_FLUTTER" pub get)
 
-export ANDROID_APPLICATION_ID="$application_id"
 build_args=(--release --build-name "$version_name" --build-number "$version_code" --dart-define-from-file "$gen_dir/dart-defines.json")
 
 if [[ "$targets" == *apk* ]]; then
