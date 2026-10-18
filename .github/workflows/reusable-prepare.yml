@@ -96,7 +96,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ./scripts/stage-frozen-resources --spec build-spec.json --output frozen-resources
+          # Prepare credential stays in this job. Compile only receives the staged files.
+          ./scripts/fetch-packaging-resources --spec build-spec.json --output studio-resources --run-id "$BUILD_RUN_ID"
+          index_args=()
+          if [[ -f studio-resources/index.json ]]; then
+            index_args=(--index "${PWD}/studio-resources/index.json")
+          fi
+          ./scripts/stage-frozen-resources --spec build-spec.json --output frozen-resources "${index_args[@]}"
 
       - name: Upload build spec artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
