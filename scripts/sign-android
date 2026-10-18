@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib/common.sh
 source "${ROOT_DIR}/scripts/lib/common.sh"
+# shellcheck source=scripts/lib/android_signing.sh
+source "${ROOT_DIR}/scripts/lib/android_signing.sh"
 
 usage() {
   cat <<'EOF'
@@ -70,32 +72,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-keystore="$tmpdir/keystore.jks"
-if [[ -n "${ANDROID_KEYSTORE_PATH:-}" ]]; then
-  cp "${ANDROID_KEYSTORE_PATH}" "$keystore"
-  ks_pass="${ANDROID_KEYSTORE_PASSWORD:-}"
-  key_pass="${ANDROID_KEY_PASSWORD:-$ks_pass}"
-  alias_name="${ANDROID_KEY_ALIAS:-}"
-else
-  assert_non_empty "COSMOS_BUILD_SIGN_MATERIAL_URL" "${COSMOS_BUILD_SIGN_MATERIAL_URL:-}"
-  assert_non_empty "COSMOS_BUILD_CREDENTIAL" "${COSMOS_BUILD_CREDENTIAL:-}"
-  assert_non_empty "BUILD_RUN_ID" "${BUILD_RUN_ID:-}"
-  require_cmd curl
-  curl --fail-with-body -sS \
-    -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
-    "${COSMOS_BUILD_SIGN_MATERIAL_URL%/}/build-runs/${BUILD_RUN_ID}/android-signing" \
-    > "$tmpdir/material.json"
-  base64 -d <<< "$(jq -r '.keystoreBase64' "$tmpdir/material.json")" > "$keystore"
-  ks_pass="$(jq -r '.keystorePassword' "$tmpdir/material.json")"
-  key_pass="$(jq -r '.keyPassword // .keystorePassword' "$tmpdir/material.json")"
-  alias_name="$(jq -r '.keyAlias' "$tmpdir/material.json")"
-  if [[ -z "$EXPECTED_FINGERPRINT" ]]; then
-    EXPECTED_FINGERPRINT="$(jq -r '.certificateSha256 // empty' "$tmpdir/material.json")"
-  fi
-fi
-
-assert_non_empty "keystore alias" "$alias_name"
-assert_non_empty "keystore password" "$ks_pass"
+prepare_android_signing "$SPEC" apk "$tmpdir"
 require_sign_receipt_fields "$EXPECTED_PACKAGE" "$expected_version_name" "$expected_version_code" "$EXPECTED_FINGERPRINT"
 EXPECTED_FINGERPRINT="$(normalize_sha256 "$EXPECTED_FINGERPRINT")"
 
@@ -107,9 +84,9 @@ zipalign -f -p 4 "$INPUT" "$aligned"
 
 apksigner sign \
   --ks "$keystore" \
-  --ks-pass "pass:${ks_pass}" \
+  --ks-pass "file:${tmpdir}/store.pass" \
   --ks-key-alias "$alias_name" \
-  --key-pass "pass:${key_pass}" \
+  --key-pass "file:${tmpdir}/key.pass" \
   --out "$OUTPUT" \
   "$aligned"
 

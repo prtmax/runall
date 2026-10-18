@@ -90,41 +90,30 @@ curl --fail-with-body -sS \
   -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
   "${COSMOS_BUILD_SIGN_MATERIAL_URL%/}/build-runs/${BUILD_RUN_ID}/ios-signing" \
   > "$tmpdir/material.json"
+python3 "${ROOT_DIR}/scripts/lib/signing_policy.py" extract-ios \
+  --spec "$SPEC" --material "$tmpdir/material.json" --app "$INPUT" --output-dir "$tmpdir"
+rm -f "$tmpdir/material.json"
+want="$(jq -r '.certificateSha256' "$tmpdir/identity.json")"
 
-p12_b64="$(jq -r '.certificateP12Base64 // empty' "$tmpdir/material.json")"
-password="$(jq -r '.certificatePassword // empty' "$tmpdir/material.json")"
-profile_b64="$(jq -r '.provisioningProfileBase64 // empty' "$tmpdir/material.json")"
-team_id="$(jq -r '.teamId // empty' "$tmpdir/material.json")"
-cert="$(jq -r '.certificateSha256 // empty' "$tmpdir/material.json")"
-assert_non_empty "certificateP12Base64" "$p12_b64"
-assert_non_empty "certificatePassword" "$password"
-assert_non_empty "provisioningProfileBase64" "$profile_b64"
-assert_non_empty "teamId" "$team_id"
-assert_non_empty "certificateSha256" "$cert"
-if [[ "$password" == "null" || "$team_id" == "null" ]]; then
-  log "ios signing material incomplete"
-  exit 1
-fi
-
-base64 -d <<< "$p12_b64" > "$tmpdir/cert.p12"
-base64 -d <<< "$profile_b64" > "$tmpdir/profile.mobileprovision"
-openssl pkcs12 -in "$tmpdir/cert.p12" -nokeys -passin "pass:${password}" -out "$tmpdir/cert.pem"
+openssl pkcs12 -in "$tmpdir/cert.p12" -nokeys -passin "file:${tmpdir}/cert.pass" -out "$tmpdir/cert.pem"
+openssl pkcs12 -in "$tmpdir/cert.p12" -nocerts -nodes -passin "file:${tmpdir}/cert.pass" -out "$tmpdir/key.pem"
 fingerprint="$(openssl x509 -in "$tmpdir/cert.pem" -fingerprint -sha256 -noout | sed -n 's/.*Fingerprint=//p')"
 got="$(normalize_sha256 "$fingerprint")"
-want="$(normalize_sha256 "$cert")"
 if [[ "$got" != "$want" ]]; then
   log "iOS certificate fingerprint mismatch"
   exit 1
 fi
 
 # codesign identities are keychain names or SHA-1 hashes. The SHA-256
-# fingerprint checked above is not a signing identity.
+# fingerprint checked above is not a signing identity. The material password
+# stays in cert.pass and is not passed to security.
 keychain="$tmpdir/signing.keychain-db"
 keychain_pass="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
 security create-keychain -p "$keychain_pass" "$keychain"
 security set-keychain-settings -lut 600 "$keychain"
 security unlock-keychain -p "$keychain_pass" "$keychain"
-security import "$tmpdir/cert.p12" -k "$keychain" -P "$password" -f pkcs12 -T /usr/bin/codesign
+security import "$tmpdir/cert.pem" -k "$keychain" -T /usr/bin/codesign
+security import "$tmpdir/key.pem" -k "$keychain" -T /usr/bin/codesign
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_pass" "$keychain"
 identity_text="$(security find-identity -p codesigning -v "$keychain")"
 identity="$(printf '%s\n' "$identity_text" | sed -n 's/^[[:space:]]*[0-9][0-9]*)[[:space:]]\([0-9A-Fa-f]\{40\}\)[[:space:]].*/\1/p')"
@@ -134,33 +123,6 @@ if [[ ! "$identity" =~ ^[0-9A-Fa-f]{40}$ || "${identity,,}" == "$want" ]]; then
   exit 1
 fi
 unset keychain_pass
-
-security cms -D -i "$tmpdir/profile.mobileprovision" > "$tmpdir/profile.plist"
-python3 - "$tmpdir/profile.plist" "$bundle_id" "$team_id" "$expected_version_name" "$expected_version_code" <<'PY'
-import datetime
-import plistlib
-import sys
-from pathlib import Path
-
-profile = plistlib.loads(Path(sys.argv[1]).read_bytes())
-bundle_id, team_id = sys.argv[2], sys.argv[3]
-teams = profile.get("TeamIdentifier") or []
-if team_id not in teams:
-    sys.exit("profile team mismatch")
-app_id = (profile.get("Entitlements") or {}).get("application-identifier", "")
-if app_id != f"{team_id}.{bundle_id}":
-    sys.exit("profile bundle id mismatch")
-expires = profile.get("ExpirationDate")
-if not isinstance(expires, datetime.datetime):
-    sys.exit("profile expiration missing")
-if expires.tzinfo is None:
-    expires = expires.replace(tzinfo=datetime.timezone.utc)
-if expires <= datetime.datetime.now(datetime.timezone.utc):
-    sys.exit("profile expired")
-name = profile.get("Name") or ""
-if "debug" in name.lower():
-    sys.exit("debug profile cannot sign a release IPA")
-PY
 
 app_name="$(basename "$INPUT")"
 mkdir -p "$tmpdir/Payload"
@@ -185,22 +147,20 @@ if str(info.get("CFBundleShortVersionString", "")) != version_name:
 if str(info.get("CFBundleVersion", "")) != version_code:
     sys.exit("app build number mismatch")
 PY
-python3 - "$tmpdir/profile.plist" "$tmpdir/entitlements.plist" <<'PY'
-import plistlib
-import sys
-from pathlib import Path
-
-profile = plistlib.loads(Path(sys.argv[1]).read_bytes())
-entitlements = profile.get("Entitlements")
-if not isinstance(entitlements, dict) or not entitlements:
-    raise SystemExit("profile entitlements missing")
-Path(sys.argv[2]).write_bytes(plistlib.dumps(entitlements))
-PY
 signed_app="$tmpdir/Payload/$app_name"
 while IFS= read -r nested; do
   [[ "$nested" == "$signed_app" ]] && continue
   codesign --force --sign "$identity" --keychain "$keychain" --timestamp=none "$nested"
-done < <(find "$signed_app" -depth \( -name '*.framework' -o -name '*.appex' -o -name '*.app' -o -name '*.dylib' \) -print)
+done < <(find "$signed_app" -depth \( -name '*.framework' -o -name '*.app' -o -name '*.dylib' \) -print)
+while IFS= read -r extension; do
+  [[ -z "$extension" ]] && continue
+  rel="$(jq -r '.relative' <<< "$extension")"
+  profile="$(jq -r '.profile' <<< "$extension")"
+  entitlements="$(jq -r '.entitlements' <<< "$extension")"
+  ext_app="${signed_app}/${rel}"
+  cp "$profile" "${ext_app}/embedded.mobileprovision"
+  codesign --force --sign "$identity" --keychain "$keychain" --timestamp=none --entitlements "$entitlements" "$ext_app"
+done < <(jq -c '.[]' "$tmpdir/extensions.json")
 codesign --force --sign "$identity" --keychain "$keychain" --timestamp=none --entitlements "$tmpdir/entitlements.plist" "$signed_app"
 codesign --verify --deep --strict "$signed_app"
 (cd "$tmpdir" && zip -qry -y "$OUTPUT" Payload)

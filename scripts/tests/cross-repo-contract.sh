@@ -73,6 +73,23 @@ if "artifactDownloadable" not in upload or "func artifactIsDownloadable" not in 
     raise SystemExit("download remains gated on verified artifacts")
 PY
 
+python3 - "${COSMOS_ROOT}/solar/mercury/internal/releasebuild/signing_material.go" "${ROOT_DIR}/scripts/lib/signing_policy.py" <<'PY'
+import re, sys
+from pathlib import Path
+go = Path(sys.argv[1]).read_text(encoding="utf-8")
+policy = Path(sys.argv[2]).read_text(encoding="utf-8")
+for struct in ("AndroidSigningMaterial", "IOSSigningMaterial"):
+    match = re.search(rf"type {struct} struct \{{(.*?)\n\}}", go, re.S)
+    if not match:
+        raise SystemExit(f"missing {struct}")
+    tags = re.findall(r'`json:"([^,"]+)', match.group(1))
+    if not tags:
+        raise SystemExit(f"{struct} has no json tags")
+    for tag in tags:
+        if tag not in policy:
+            raise SystemExit(f"signing policy does not honor Mercury field {tag}")
+PY
+
 flutter_bin="${RUNALL_FLUTTER_BIN:-/root/fvm/versions/3.47.2/bin/flutter}"
 dart_bin="${RUNALL_DART_BIN:-/root/fvm/versions/3.47.2/bin/dart}"
 [[ -x "$flutter_bin" && -x "$dart_bin" ]] || {
@@ -84,7 +101,7 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/runall-cross-XXXXXX")"
 clone="${work}/orion"
 git clone --shared "$ORION_ROOT" "$clone" >/dev/null
 head_sha="$(git -C "$clone" rev-parse HEAD)"
-if [[ "$head_sha" != "be5d51361727c6b4797ec325354ddf201d51598f" ]]; then
+if [[ "$head_sha" != "fe436419fb3268d2174c89a14237734a145f3e71" ]]; then
   log "ORION_ROOT is not the delivered Orion SHA $head_sha"
   exit 1
 fi
