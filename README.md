@@ -65,6 +65,11 @@ this repository. Missing material or tools fail the job; they do not produce a d
 
 Frozen packaging bytes are never fetched from arbitrary `ref` URLs. For `app-studio/*` refs, prepare calls `GET ${COSMOS_BUILD_SPEC_URL%/}/${build_run_id}/packaging-resources` with its stage credential, accepts only refs frozen in `buildInput.resources`, and recomputes the lowercase SHA-256 digest. Non-studio refs require an authorized local index. Compile receives only the verified resource artifact and rechecks every digest before running Orion's native app assembler. It has no OIDC, platform credential, or signing key.
 
+App Studio language resources are frozen `application/zip` objects containing all
+selected languages, labels and locale defaults. Prepare treats them as bounded,
+digest-verified bytes; Orion validates the archive before generating bundled assets.
+Raw FTL packaging responses are rejected.
+
 Local contract tests (no network):
 
 ```bash

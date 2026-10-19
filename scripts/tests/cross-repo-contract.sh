@@ -17,7 +17,7 @@ actual="$(node "${ROOT_DIR}/scripts/lib/native_digest.js" input "$work/vector.js
 [[ "$actual" == "$expected" ]] || { log "runall JCS digest differs from the Cosmos vector"; exit 1; }
 
 python3 - "$work" <<'PY'
-import hashlib, json, struct, sys, zlib
+import hashlib, json, struct, sys, zipfile, zlib
 from pathlib import Path
 root = Path(sys.argv[1])
 def chunk(kind, data):
@@ -32,26 +32,50 @@ png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1024, 1024, 
     + chunk(b"IEND", b"")
 )
 (root / "en.ftl").write_text("home = Home\n", encoding="utf-8")
+ftl = (root / "en.ftl").read_bytes()
+manifest = {"schemaVersion": 1, "defaultLocale": "en", "referenceLocale": "en",
+            "bundleDigest": "sha256:" + "a" * 64,
+            "locales": [{"locale": "en", "label": "English", "path": "en.ftl", "version": 1,
+                         "digest": "sha256:" + hashlib.sha256(ftl).hexdigest()}]}
+with zipfile.ZipFile(root / "languages.zip", "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    archive.writestr("en.ftl", ftl)
+    archive.writestr("manifest.json", json.dumps(manifest))
 PY
 icon_digest="$(sha256_file "$work/icon.png")"
-locale_digest="$(sha256_file "$work/en.ftl")"
+locale_digest="$(sha256_file "$work/languages.zip")"
 theme_fixture="${COSMOS_ROOT}/solar/mercury/internal/theme/testdata/native-theme-tokens.json"
 [[ -f "$theme_fixture" ]] || { log "Mercury theme output fixture is missing"; exit 1; }
 jq --arg icon "$icon_digest" --arg locale "$locale_digest" --slurpfile theme "$theme_fixture" '
   .buildInput.themes |= map(.themeKey = "cosmos-default" | .tokens = $theme[0]) |
   .buildInput.resources = [
     {kind:"app_icon",key:"app_icon",ref:"app-studio/icon",digest:$icon,contentType:"image/png"},
-    {kind:"localization",key:"en",ref:"app-studio/en",digest:$locale,contentType:"text/plain; charset=utf-8"}
+    {kind:"localization",key:"en",ref:"app-studio/en",digest:$locale,contentType:"application/zip"}
   ] |
   .platform = "android" | .targets = ["apk"]
 ' "$work/vector.json" > "$work/spec.json"
-printf '{"app-studio/icon":"icon.png","app-studio/en":"en.ftl"}\n' > "$work/index.json"
-(cd "${ORION_ROOT}/apps/rigel" && python3 "$assembler" "$work/spec.json" "$work/output" "$work/index.json")
+printf '{"app-studio/icon":"icon.png","app-studio/en":"languages.zip"}\n' > "$work/index.json"
+PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT_DIR" "$work" <<'PY'
+import base64, json, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts/lib"))
+from frozen_resources import materialize_packaging_response
+root = Path(sys.argv[2])
+spec = json.loads((root / "spec.json").read_text())
+index = json.loads((root / "index.json").read_text())
+payload = [{"ref": row["ref"], "digest": row["digest"], "contentType": row["contentType"],
+            "contentBase64": base64.b64encode((root / index[row["ref"]]).read_bytes()).decode()}
+           for row in spec["buildInput"]["resources"]]
+(root / "packaging-response.json").write_text(json.dumps(payload))
+materialize_packaging_response(root / "spec.json", root / "packaging-response.json", root / "prepared")
+PY
+(cd "${ORION_ROOT}/apps/rigel" && python3 "$assembler" "$work/spec.json" "$work/output" "$work/prepared/index.json")
 generated="$work/output/overlay/lib/bootstrap/development_assembly.dart"
 grep -q 'MellowHomePresentation' "$generated"
 grep -q 'BreezePersonalCenterPresentation' "$generated"
 grep -q 'colors.primary' "$generated"
 grep -q '#0B6BCB' "$generated"
+cmp "$work/en.ftl" "$work/output/overlay/assets/fluent/en.ftl"
+jq -e '.defaultLocale == "en" and .referenceLocale == "en" and .locales[0].label == "English"' "$work/output/overlay/assets/fluent/manifest.json" >/dev/null
 
 jq '.buildInput.app.displayName="${throw StateError(\"injected\")}"' "$work/spec.json" > "$work/unsafe-display.json"
 if (cd "${ORION_ROOT}/apps/rigel" && python3 "$assembler" "$work/unsafe-display.json" "$work/unsafe-output" "$work/index.json") >/dev/null 2>&1; then
@@ -81,7 +105,7 @@ if info.get("CFBundleDisplayName") != "$(APP_DISPLAY_NAME)":
 PY
 oversized_digest="$(sha256_file "$work/oversized.png")"
 jq --arg digest "$oversized_digest" '.buildInput.resources[0].digest=$digest | .buildInput.resources[0].ref="app-studio/oversized"' "$work/ios-spec.json" > "$work/oversized-spec.json"
-printf '{"app-studio/oversized":"oversized.png","app-studio/en":"en.ftl"}\n' > "$work/oversized-index.json"
+printf '{"app-studio/oversized":"oversized.png","app-studio/en":"languages.zip"}\n' > "$work/oversized-index.json"
 if (cd "${ORION_ROOT}/apps/rigel" && python3 "$assembler" "$work/oversized-spec.json" "$work/oversized-output" "$work/oversized-index.json") >/dev/null 2>&1; then
   log "PNG expanding beyond its declared scanlines was accepted"
   exit 1

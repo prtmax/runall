@@ -79,7 +79,7 @@ def digest_bytes(data):
 
 MAX_PACKAGING_RESOURCES = 52
 MAX_PACKAGING_BYTES = 36 * 1024 * 1024
-PACKAGING_CONTENT_TYPES = {"image/png", "text/plain; charset=utf-8"}
+PACKAGING_CONTENT_TYPES = {"image/png", "application/zip"}
 PACKAGING_FIELDS = {"ref", "digest", "contentType", "contentBase64"}
 
 
