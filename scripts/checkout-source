@@ -31,8 +31,8 @@ assert_non_empty "--spec" "$SPEC"
 assert_non_empty "--workspace" "$WORKSPACE"
 validate_build_spec_document "$SPEC"
 
-repository="$(json_get "$SPEC" '.repository')"
-source_commit="$(json_get "$SPEC" '.sourceCommit')"
+repository="$(json_get "$SPEC" '.buildInput.source.repository')"
+source_commit="$(json_get "$SPEC" '.buildInput.source.commit')"
 orion_sha="$(read_orion_commit "$SPEC")"
 
 mkdir -p "$WORKSPACE"
@@ -57,11 +57,17 @@ if [[ ! -d "${WORKSPACE}/.git" ]]; then
 fi
 
 git -C "$WORKSPACE" remote set-url origin "$origin_url"
-if ! git_with_auth -C "$WORKSPACE" fetch --depth=1 origin "$source_commit"; then
-  log "source fetch failed"
+if ! git_with_auth -C "$WORKSPACE" fetch --filter=blob:none origin \
+  refs/heads/main:refs/remotes/origin/main; then
+  log "trusted Orion main fetch failed"
   exit 1
 fi
-git -C "$WORKSPACE" checkout --detach FETCH_HEAD
+if ! git -C "$WORKSPACE" cat-file -e "${source_commit}^{commit}" 2>/dev/null ||
+  ! git -C "$WORKSPACE" merge-base --is-ancestor "$source_commit" refs/remotes/origin/main; then
+  log "source commit is not in trusted Orion main history"
+  exit 1
+fi
+git -C "$WORKSPACE" checkout --detach "$source_commit"
 actual_source="$(git -C "$WORKSPACE" rev-parse HEAD)"
 if [[ "$actual_source" != "$source_commit" ]]; then
   log "source HEAD mismatch"
@@ -73,30 +79,11 @@ if [[ "$origin_actual" != "$origin_url" ]]; then
   exit 1
 fi
 
-if [[ -f "${WORKSPACE}/.gitmodules" ]] && grep -q 'submodule "orion"' "${WORKSPACE}/.gitmodules"; then
-  orion_url="$(git -C "$WORKSPACE" config -f .gitmodules --get submodule.orion.url)"
-  assert_non_empty "submodule.orion.url" "$orion_url"
-  if [[ "$orion_url" =~ ^[A-Za-z][A-Za-z0-9+.-]*:// ]] && [[ ! "$orion_url" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?$ ]]; then
-    log "orion submodule URL is not an https GitHub repository"
-    exit 1
-  fi
-  if [[ ! -e "${WORKSPACE}/orion/.git" ]]; then
-    mkdir -p "${WORKSPACE}/orion"
-    git init "${WORKSPACE}/orion"
-    git -C "${WORKSPACE}/orion" remote add origin "$orion_url"
-  fi
-  git -C "${WORKSPACE}/orion" remote set-url origin "$orion_url"
-  if ! git_with_auth -C "${WORKSPACE}/orion" fetch --depth=1 origin "$orion_sha"; then
-    log "orion fetch failed"
-    exit 1
-  fi
-  git -C "${WORKSPACE}/orion" checkout --detach FETCH_HEAD
-  actual_orion="$(git -C "${WORKSPACE}/orion" rev-parse HEAD)"
-  if [[ "$actual_orion" != "$orion_sha" ]]; then
-    log "orion HEAD mismatch"
-    exit 1
-  fi
-fi
-
 resolve_release_app_dir "$WORKSPACE" "$source_commit" "$orion_sha" >/dev/null
+actual_lock="$(sha256_file "${WORKSPACE}/pubspec.lock")"
+expected_lock="$(json_get "$SPEC" '.buildInput.source.lockDigest')"
+if [[ "$actual_lock" != "$expected_lock" ]]; then
+  log "Orion pubspec.lock digest mismatch"
+  exit 1
+fi
 log "source checkout ready at $source_commit orion $orion_sha"

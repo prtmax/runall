@@ -29,12 +29,12 @@ assert_non_empty() {
 
 source_origin_url() {
   local repository="$1" slug=""
-  if [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-    slug="$repository"
-  elif [[ "$repository" =~ ^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(\.git)?$ ]]; then
-    slug="${BASH_REMATCH[1]}"
+  if [[ "$repository" == "prtmax/orion" ]]; then
+    slug="prtmax/orion"
+  elif [[ "$repository" =~ ^https://github\.com/prtmax/orion(\.git)?$ ]]; then
+    slug="prtmax/orion"
   else
-    log "repository is not a GitHub owner/name or https URL"
+    log "build source repository is not the trusted prtmax/orion authority"
     exit 1
   fi
   printf 'https://github.com/%s.git' "$slug"
@@ -43,50 +43,31 @@ source_origin_url() {
 read_orion_commit() {
   local file="$1" commit
   require_cmd jq
-  commit="$(jq -r '.config.orion.commit // empty' "$file")"
+  commit="$(jq -r '.buildInput.source.commit // empty' "$file")"
   if [[ ! "$commit" =~ ^[0-9a-f]{40}$ || "$commit" =~ ^0+$ ]]; then
-    log "config.orion.commit must be an exact Git commit"
+    log "buildInput.source.commit must be an exact Git commit"
     exit 1
   fi
   printf '%s' "$commit"
 }
 
 # Print the Flutter app directory for a checked-out source tree.
-# Supported layouts are a direct Orion repo and a Cosmos repo whose orion
-# submodule is already checked out. Anything else fails closed.
 resolve_release_app_dir() {
-  local workspace="$1" source_commit="$2" orion_commit="$3" head actual
+  local workspace="$1" source_commit="$2" orion_commit="$3" head
   head="$(git -C "$workspace" rev-parse HEAD)"
   if [[ "$head" != "$source_commit" ]]; then
     log "workspace source commit mismatch"
     exit 1
   fi
-  if [[ -f "$workspace/.gitmodules" ]] && grep -q 'submodule "orion"' "$workspace/.gitmodules"; then
-    if [[ ! -e "$workspace/orion/.git" ]]; then
-      log "cosmos source is missing the orion submodule checkout"
-      exit 1
-    fi
-    actual="$(git -C "$workspace/orion" rev-parse HEAD)"
-    if [[ "$actual" != "$orion_commit" ]]; then
-      log "workspace orion commit mismatch"
-      exit 1
-    fi
-    if [[ ! -f "$workspace/orion/apps/rigel/tool/generate_release_build.dart" ]]; then
-      log "orion submodule is not a release app checkout"
-      exit 1
-    fi
-    printf '%s\n' "$workspace/orion/apps/rigel"
-    return 0
-  fi
-  if [[ -f "$workspace/apps/rigel/tool/generate_release_build.dart" ]]; then
+  if [[ -f "$workspace/tools/app_assembler/assemble.py" ]]; then
     if [[ "$source_commit" != "$orion_commit" ]]; then
-      log "direct orion checkout must match config.orion.commit"
+      log "direct Orion checkout must match buildInput.source.commit"
       exit 1
     fi
     printf '%s\n' "$workspace/apps/rigel"
     return 0
   fi
-  log "source layout is neither an orion repo nor a cosmos checkout with an orion submodule"
+  log "source is not an Orion checkout with the native app assembler"
   exit 1
 }
 
@@ -103,76 +84,35 @@ compute_spec_hash() {
   local spec_file="$1"
   local common_dir
   common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  require_cmd python3
-  python3 "${common_dir}/spec_hash.py" "$spec_file" | tr -d '\n'
+  require_cmd node
+  node "${common_dir}/native_digest.js" spec "$spec_file" | tr -d '\n'
 }
 
 verify_spec_hash_field() {
   local spec_file="$1"
   local declared computed
-  declared="$(json_get "$spec_file" '.specHash')"
+  declared="$(json_get "$spec_file" '.specDigest')"
   computed="$(compute_spec_hash "$spec_file")"
   if [[ "$declared" != "$computed" ]]; then
-    log "specHash does not match canonical document digest"
+    log "specDigest does not match immutable native build facts"
     exit 1
   fi
-}
-
-verify_declared_resource_digests() {
-  local spec_file="$1"
-  require_cmd jq
-  local count root
-  count="$(jq -r '.resources // [] | length' "$spec_file")"
-  if [[ "$count" == "0" ]]; then
-    return 0
-  fi
-  root="${RUNALL_RESOURCE_ROOT:-$(dirname "$spec_file")}"
-  local i=0
-  while [[ "$i" -lt "$count" ]]; do
-    local path digest
-    path="$(jq -r ".resources[$i].path // empty" "$spec_file")"
-    digest="$(jq -r ".resources[$i].sha256 // empty" "$spec_file")"
-    if [[ -z "$path" || -z "$digest" ]]; then
-      log "resource entry missing path or sha256"
-      exit 1
-    fi
-    if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-      log "invalid resource digest: $path"
-      exit 1
-    fi
-    if [[ "$path" =~ ^[a-zA-Z][a-zA-Z0-9+.-]*:// ]]; then
-      log "resource path must be a relative file, not a URL: $path"
-      exit 1
-    fi
-    if [[ "$path" == /* || "$path" == *".."* ]]; then
-      log "resource path rejected: $path"
-      exit 1
-    fi
-    local file_path="${root%/}/$path"
-    if [[ ! -f "$file_path" ]]; then
-      log "resource file missing: $path"
-      exit 1
-    fi
-    local actual="sha256:$(sha256_file "$file_path")"
-    if [[ "$actual" != "$digest" ]]; then
-      log "resource digest mismatch: $path"
-      exit 1
-    fi
-    i=$((i + 1))
-  done
 }
 
 validate_build_spec_document() {
   local spec_file="$1" expected_run_id="${2:-}"
 
   require_cmd jq
-  jq -e '.schemaVersion == "cosmos.release-build.v1"' "$spec_file" >/dev/null
+  jq -e '.schemaVersion == "cosmos.native-build.v1"' "$spec_file" >/dev/null
   jq -e '.status == "ready"' "$spec_file" >/dev/null
-  jq -e '.specHash | startswith("sha256:")' "$spec_file" >/dev/null
-  jq -r '.releaseSnapshotDigest' "$spec_file" | grep -Eq '^sha256:[0-9a-f]{64}$'
-  jq -e '.config.orion.toolchainVersion | type == "string" and length > 0' "$spec_file" >/dev/null
-  source_origin_url "$(json_get "$spec_file" '.repository')" >/dev/null
-  jq -r '.sourceCommit' "$spec_file" | grep -Eq '^[0-9a-f]{40}$'
+  jq -r '.specDigest' "$spec_file" | grep -Eq '^[0-9a-f]{64}$'
+  jq -r '.inputDigest' "$spec_file" | grep -Eq '^[0-9a-f]{64}$'
+  jq -e '.buildInput.schemaVersion == "cosmos.native-build.v1"' "$spec_file" >/dev/null
+  jq -e '.buildInput.source.flutterVersion | type == "string" and length > 0' "$spec_file" >/dev/null
+  source_origin_url "$(json_get "$spec_file" '.buildInput.source.repository')" >/dev/null
+  jq -r '.buildInput.source.commit' "$spec_file" | grep -Eq '^[0-9a-f]{40}$'
+  jq -r '.buildInput.source.lockDigest' "$spec_file" | grep -Eq '^[0-9a-f]{64}$'
+  jq -e '.tenantId == .buildInput.tenantId and .appId == .buildInput.appId and .catalogId == .buildInput.source.catalogId' "$spec_file" >/dev/null
   read_orion_commit "$spec_file" >/dev/null
   jq -r '.platform' "$spec_file" | grep -Eq '^(android|ios)$'
 
@@ -194,7 +134,13 @@ validate_build_spec_document() {
   fi
 
   verify_spec_hash_field "$spec_file"
-  verify_declared_resource_digests "$spec_file"
+  local common_dir input_digest
+  common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  input_digest="$(node "${common_dir}/native_digest.js" input "$spec_file" | tr -d '\n')"
+  [[ "$input_digest" == "$(json_get "$spec_file" '.inputDigest')" ]] || {
+    log "inputDigest does not match buildInput"
+    exit 1
+  }
 }
 
 normalize_sha256() {
@@ -209,17 +155,17 @@ normalize_sha256() {
   printf '%s' "$raw"
 }
 
-# Frozen specs store the package version on config.app, and versionCode is a
+# Frozen specs store the package version on buildInput.app, and versionCode is a
 # JSON number. A string, null, or config.ios copy is not a signing input.
 read_app_version_code() {
   local file="$1" code
   require_cmd jq
-  if ! code="$(jq -er 'if (.config.app.versionCode|type)=="number" then .config.app.versionCode else empty end' "$file")"; then
-    log "config.app.versionCode must be a JSON number"
+  if ! code="$(jq -er 'if (.buildInput.app.versionCode|type)=="number" then .buildInput.app.versionCode else empty end' "$file")"; then
+    log "buildInput.app.versionCode must be a JSON number"
     exit 1
   fi
   if [[ ! "$code" =~ ^[0-9]+$ ]]; then
-    log "config.app.versionCode must be an integer"
+    log "buildInput.app.versionCode must be an integer"
     exit 1
   fi
   printf '%s' "$code"

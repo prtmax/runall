@@ -50,7 +50,7 @@ if [[ "$platform" != "android" ]]; then
 fi
 targets="$(json_get "$SPEC" '.targets | join(",")')"
 
-gen_dir="${APP_DIR}/.runall/release-build"
+gen_dir="${APP_DIR}/.runall/native-build"
 generate_frozen_release "$gen_dir"
 application_id="$FROZEN_APPLICATION_ID"
 version_name="$FROZEN_VERSION_NAME"

@@ -76,10 +76,10 @@ jobs:
           ./scripts/load-build-spec --output build-spec.json --run-id "$BUILD_RUN_ID"
           echo "platform=$(jq -r .platform build-spec.json)" >> "$GITHUB_OUTPUT"
           echo "targets=$(jq -c .targets build-spec.json)" >> "$GITHUB_OUTPUT"
-          echo "repository=$(jq -r .repository build-spec.json)" >> "$GITHUB_OUTPUT"
-          echo "source_commit=$(jq -r .sourceCommit build-spec.json)" >> "$GITHUB_OUTPUT"
-          echo "orion_commit=$(jq -r '.config.orion.commit // empty' build-spec.json)" >> "$GITHUB_OUTPUT"
-          echo "application_id=$(jq -r '.config.app.applicationId // empty' build-spec.json)" >> "$GITHUB_OUTPUT"
+          echo "repository=$(jq -r .buildInput.source.repository build-spec.json)" >> "$GITHUB_OUTPUT"
+          echo "source_commit=$(jq -r .buildInput.source.commit build-spec.json)" >> "$GITHUB_OUTPUT"
+          echo "orion_commit=$(jq -r .buildInput.source.commit build-spec.json)" >> "$GITHUB_OUTPUT"
+          echo "application_id=$(jq -r '.buildInput.app.applicationId // empty' build-spec.json)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout frozen source tree
         shell: bash

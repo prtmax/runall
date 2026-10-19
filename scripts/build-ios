@@ -54,7 +54,7 @@ if [[ ! -f "$info_plist" ]]; then
   exit 1
 fi
 
-gen_dir="${APP_DIR}/.runall/release-build"
+gen_dir="${APP_DIR}/.runall/native-build"
 generate_frozen_release "$gen_dir"
 bundle_id="$FROZEN_BUNDLE_ID"
 display_name="$FROZEN_DISPLAY_NAME"

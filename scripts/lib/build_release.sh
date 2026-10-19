@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared frozen-input release build steps. Sourced by build-android and build-ios.
+# Shared frozen-input native build steps. Sourced by build-android and build-ios.
 
 absolute_path() {
   local path="$1"
@@ -15,13 +15,20 @@ prepare_frozen_workspace() {
   SPEC="$(absolute_path "$spec")"
   WORKSPACE="$(cd "$workspace" && pwd)"
   validate_build_spec_document "$SPEC"
-  source_commit="$(json_get "$SPEC" '.sourceCommit')"
+  source_commit="$(json_get "$SPEC" '.buildInput.source.commit')"
   orion_commit="$(read_orion_commit "$SPEC")"
   if [[ ! -d "${WORKSPACE}/.git" ]]; then
     log "workspace is not a git checkout; run checkout-source in prepare"
     exit 1
   fi
   APP_DIR="$(resolve_release_app_dir "$WORKSPACE" "$source_commit" "$orion_commit")"
+  local expected_lock actual_lock
+  expected_lock="$(json_get "$SPEC" '.buildInput.source.lockDigest')"
+  actual_lock="$(sha256_file "${WORKSPACE}/pubspec.lock")"
+  [[ "$expected_lock" == "$actual_lock" ]] || {
+    log "Orion pubspec.lock digest mismatch"
+    exit 1
+  }
   local env_file
   env_file="$(mktemp)"
   "${RUNALL_ROOT}/scripts/ensure-flutter" --spec "$SPEC" --workspace "$WORKSPACE" --env-file "$env_file"
@@ -84,30 +91,28 @@ PY
 generate_frozen_release() {
   local gen_dir="$1" scratch index settings_env
   scratch="$(dirname "$gen_dir")"
-  rm -rf "$gen_dir" "${scratch}/resources"
-  mkdir -p "$gen_dir" "${scratch}/resources"
-  materialize_frozen_resources "$SPEC" "${scratch}/resources"
-  index="${scratch}/resources/resources.json"
-  (cd "$APP_DIR" && "$RUNALL_DART" run tool/generate_release_build.dart "$SPEC" "$gen_dir" "$index")
-  [[ -f "$gen_dir/dart-defines.json" && -f "$gen_dir/bundled.json" && -f "$gen_dir/platform-profiles.json" && -f "$gen_dir/build-settings.json" ]] || {
-    log "Orion generate_release_build.dart did not write frozen outputs"
-    exit 1
-  }
-  if ! cmp -s "$gen_dir/bundled.json" "$gen_dir/overlay/assets/releases/bundled.json"; then
-    log "overlay bundled Release does not match generator output"
+  if [[ -e "$gen_dir" || -e "${scratch}/resources" ]]; then
+    log "native build output already exists"
     exit 1
   fi
+  mkdir -p "${scratch}/resources"
+  materialize_frozen_resources "$SPEC" "${scratch}/resources"
+  index="${scratch}/resources/resources.json"
+  (cd "$APP_DIR" && python3 "${WORKSPACE}/tools/app_assembler/assemble.py" "$SPEC" "$gen_dir" "$index")
+  [[ -f "$gen_dir/dart-defines.json" && -f "$gen_dir/build-settings.json" ]] || {
+    log "Orion app assembler did not write frozen outputs"
+    exit 1
+  }
   apply_release_overlay "$gen_dir/overlay" "$APP_DIR"
   settings_env="${scratch}/settings.env"
-  python3 - "$gen_dir/dart-defines.json" "$gen_dir/platform-profiles.json" "$gen_dir/build-settings.json" "$SPEC" "$settings_env" <<'PY'
+  python3 - "$gen_dir/dart-defines.json" "$gen_dir/build-settings.json" "$SPEC" "$settings_env" <<'PY'
 import json, shlex, sys
 from pathlib import Path
 defines = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-profiles = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
-settings = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
-spec = json.loads(Path(sys.argv[4]).read_text(encoding="utf-8"))
-app = spec["config"]["app"]
-env = spec["config"]["environment"]
+settings = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+spec = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
+app = spec["buildInput"]["app"]
+env = spec["buildInput"]["environment"]
 platform = spec["platform"]
 required = {
     "APP_ENV": env["name"],
@@ -119,12 +124,6 @@ required = {
 for key, value in required.items():
     if defines.get(key) != value:
         raise SystemExit(f"frozen dart define mismatch: {key}")
-profile = profiles.get(platform) or {}
-identifier = app["applicationId"] if platform == "android" else app["bundleId"]
-if profile.get("applicationIdentifier") != identifier:
-    raise SystemExit("frozen platform profile identifier mismatch")
-if profile.get("targets") != spec["targets"]:
-    raise SystemExit("frozen platform profile targets mismatch")
 expected = {
     "platform": platform,
     "applicationId": app["applicationId"],
@@ -143,7 +142,7 @@ lines = [
     f"FROZEN_VERSION_NAME={shlex.quote(str(settings['versionName']))}",
     f"FROZEN_VERSION_CODE={shlex.quote(str(settings['versionCode']))}",
 ]
-Path(sys.argv[5]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+Path(sys.argv[4]).write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
   # Values were checked against the frozen spec before quoting.
   # shellcheck disable=SC1090

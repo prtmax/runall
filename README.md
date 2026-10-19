@@ -1,6 +1,6 @@
 # runall
 
-`runall` is the controlled GitHub Actions executor for Cosmos release app package builds.
+`runall` is the controlled GitHub Actions executor for Cosmos native Flutter app builds.
 Mercury dispatches this repository with a single platform **build run id**; repository
 commits, frozen build specs, signing material, and upload credentials are resolved on the
 server and exposed to jobs only through short-lived Cosmos build credentials (OIDC exchange).
@@ -28,6 +28,12 @@ no repository token, and no signing material. Prepare checks out the frozen sour
 and uploads that workspace. Finalize still runs when compile or sign fails so the
 platform receives a failed callback.
 
+The build source is fixed to `prtmax/orion`. Prepare fetches the trusted `main`
+ref and accepts a frozen commit only when it is an ancestor of that ref. A feature
+branch, pull request ref, fork, or repository named by a build payload cannot
+supply executable assembler code. Publish a catalog for production only after its
+Orion commit has merged into the trusted `main` history.
+
 | Job | Purpose | Sensitive access |
 |-----|---------|------------------|
 | `prepare` | OIDC exchange, load frozen spec, recompute canonical hash and resource digests, checkout source | Read spec + resources; clone token stays in this job |
@@ -48,16 +54,16 @@ this repository. Missing material or tools fail the job; they do not produce a d
 | `scripts/exchange-build-credential` | GitHub OIDC → Cosmos bearer token |
 | `scripts/load-build-spec` | Fetch or load local frozen spec + validation |
 | `scripts/checkout-source` | Prepare-only clone of a direct Orion repo or a Cosmos checkout with its Orion submodule. Token is a per-command header, never a remote URL |
-| `scripts/ensure-flutter` | Install the Flutter SDK pinned by `config.orion.toolchainVersion` and `.fvmrc` |
-| `scripts/build-android` | Unsigned Flutter APK/AAB from the frozen Orion generator (`SPEC OUTPUT RESOURCE_INDEX`), overlay, and build-settings |
+| `scripts/ensure-flutter` | Install the Flutter SDK pinned by `buildInput.source.flutterVersion` and `.fvmrc` |
+| `scripts/build-android` | Unsigned Flutter APK/AAB from the frozen Orion app assembler and packaging overlay |
 | `scripts/sign-android` | Sign APK, verify package, version, and cert fingerprint |
 | `scripts/sign-aab` | Sign AAB with jarsigner, verify version and cert fingerprint |
-| `scripts/build-ios` | Unsigned iOS Runner.app from frozen Orion generator output, packed as a tar so symlinks survive upload |
+| `scripts/build-ios` | Unsigned iOS Runner.app from frozen Orion app assembler output, packed as a tar so symlinks survive upload |
 | `scripts/sign-ios` | Sign Runner.app, package IPA, record the sign result |
 | `scripts/upload-artifacts` | Authorize with `byteSize`, PUT only to the granted https URL, then call artifact complete |
 | `scripts/report-result` | Attempt progress / terminal status callback |
 
-Frozen brand and language bytes are not fetched from `ref` URLs. For `app-studio/*` refs, prepare calls `GET ${COSMOS_BUILD_SPEC_URL%/}/${build_run_id}/packaging-resources` with the prepare credential, decodes only the refs named by that spec, recomputes SHA-256, and rejects a mismatched digest, unexpected field, or extra ref. Those bytes are the Spec's frozen identity. A saved packaging row can still name an older digest after App Studio changes; prepare does not read or repair that row. Non-studio refs still come from an authorized local index. `scripts/stage-frozen-resources` then uploads `frozen-resources-<build_run_id>`. Paths in that index may be absolute or relative to the index file, and must stay inside its directory; URLs, `..`, and symlinks are rejected. The compile job downloads only that artifact, sets `RUNALL_FROZEN_RESOURCE_ROOT` to its absolute path, and does not receive OIDC, the spec URL, platform credentials, or signing keys. Digests are checked again before `generate_release_build.dart`. Android reads `ANDROID_APPLICATION_ID` and `APP_DISPLAY_NAME` from `build-settings.json`; iOS uses the overlay `Branded.xcconfig`. A spec that still uses non-studio refs fails in prepare when its authorized index is absent.
+Frozen packaging bytes are never fetched from arbitrary `ref` URLs. For `app-studio/*` refs, prepare calls `GET ${COSMOS_BUILD_SPEC_URL%/}/${build_run_id}/packaging-resources` with its stage credential, accepts only refs frozen in `buildInput.resources`, and recomputes the lowercase SHA-256 digest. Non-studio refs require an authorized local index. Compile receives only the verified resource artifact and rechecks every digest before running Orion's native app assembler. It has no OIDC, platform credential, or signing key.
 
 Local contract tests (no network):
 

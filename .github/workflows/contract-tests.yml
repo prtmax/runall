@@ -26,6 +26,8 @@ jobs:
             [[ -f "$script" ]] && bash -n "$script"
           done
           bash -n scripts/tests/run-contract-tests.sh
+          node --check scripts/lib/native_digest.js
+          python3 -m py_compile scripts/lib/frozen_resources.py
 
       - name: Run contract tests
         shell: bash

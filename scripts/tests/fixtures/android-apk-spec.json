@@ -1,93 +1,38 @@
 {
-  "id": "spec-contract-test",
-  "buildRunId": "run-contract-test",
-  "schemaVersion": "cosmos.release-build.v1",
-  "status": "ready",
-  "releaseId": "1",
-  "releaseRevisionId": "2",
-  "tenantId": "3",
-  "appId": "4",
-  "repository": "prtmax/orion",
-  "sourceCommit": "0000000000000000000000000000000000000001",
+  "id": "800",
+  "schemaVersion": "cosmos.native-build.v1",
+  "tenantId": "100",
+  "appId": "200",
+  "configRevision": 3,
+  "catalogId": "300",
   "platform": "android",
-  "targets": [
-    "apk"
-  ],
-  "config": {
-    "orion": {
-      "commit": "0000000000000000000000000000000000000001",
-      "toolchainVersion": "3.47.2"
+  "targets": ["apk"],
+  "buildInput": {
+    "schemaVersion": "cosmos.native-build.v1",
+    "tenantId": "100",
+    "appId": "200",
+    "source": {
+      "catalogId": "300",
+      "catalogDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "repository": "prtmax/orion",
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "flutterVersion": "3.47.2",
+      "lockDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     },
-    "app": {
-      "applicationId": "com.example.contract",
-      "bundleId": "com.example.contract",
-      "displayName": "Contract",
-      "versionName": "1.2.3",
-      "versionCode": 7
-    },
-    "release": {
-      "releaseId": "1",
-      "releaseRevisionId": "2",
-      "tenantId": "3",
-      "appId": "4",
-      "channel": "stable",
-      "version": "1.2.3",
-      "runtimeReleaseId": "14",
-      "snapshotDigest": "sha256:abababababababababababababababababababababababababababababababab",
-      "bundled": {
-        "appId": "4",
-        "channel": "stable",
-        "releaseId": "14",
-        "tenantId": "3"
-      },
-      "bundledDigest": "sha256:abababababababababababababababababababababababababababababababab"
-    },
-    "brandAssets": [
-      {
-        "kind": "logo",
-        "ref": "assets/logo.png",
-        "digest": "sha256:abababababababababababababababababababababababababababababababab"
-      }
-    ],
-    "environment": {
-      "name": "staging",
-      "releaseChannel": "stable",
-      "mercuryBaseUrl": "https://mercury.example.test",
-      "runtimeBaseUrl": "https://runtime.example.test",
-      "endpoints": [
-        {
-          "name": "mercury",
-          "url": "https://mercury.example.test",
-          "version": "v1",
-          "digest": "sha256:abababababababababababababababababababababababababababababababab"
-        }
-      ]
-    },
-    "languages": [
-      {
-        "locale": "zh-TW",
-        "ref": "i18n/zh-TW.ftl",
-        "digest": "sha256:abababababababababababababababababababababababababababababababab"
-      }
-    ],
-    "trust": {
-      "domain": "example.test",
-      "rootKeyId": "root-1",
-      "rootKeyVersion": 1,
-      "algorithm": "ed25519",
-      "publicKey": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
-      "digest": "sha256:abababababababababababababababababababababababababababababababab"
-    },
-    "signing": {
-      "profileRef": "signing/profile-1",
-      "ready": true
-    }
+    "app": {"applicationId": "com.example.native", "bundleId": "com.example.native", "displayName": "Native Demo", "versionName": "1.0.0", "versionCode": 1},
+    "environment": {"name": "test", "releaseChannel": "dev", "mercuryBaseUrl": "https://api.example.test", "runtimeBaseUrl": "https://api.example.test/api/v1/runtime", "endpoints": []},
+    "features": [{"featureKey": "HOME", "presentationKey": "MELLOW"}],
+    "themes": [{"familyKey": "MELLOW", "themeKey": "default", "tokens": {}}],
+    "resources": [],
+    "nativePermissions": {"revision": 0, "defaultLocale": "en", "android": [], "iosUsage": [], "iosEntitlements": []},
+    "signing": {"profileRef": "signing-profile:400"},
+    "surfaces": [{"key": "APP_BAR", "items": [{"featureKey": "HOME", "label": "Home"}]}]
   },
-  "releaseSnapshot": {
-    "releaseId": 1,
-    "version": "1.2.3"
-  },
-  "releaseSnapshotDigest": "sha256:abababababababababababababababababababababababababababababababab",
-  "artifactPrefix": "builds/contract",
-  "specHash": "sha256:272cbed7f8307eb9998957931ce036e5bd0994bae79adb1acb79bfcb28d9f04e"
+  "artifactPrefix": "native/100/200/android",
+  "inputDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "specDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "status": "ready",
+  "createdBy": "400",
+  "createdAt": "2026-10-20T00:00:00Z",
+  "buildRunId": "900"
 }

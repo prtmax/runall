@@ -40,9 +40,9 @@ assert_non_empty "--output" "$OUTPUT"
 
 validate_build_spec_document "$SPEC"
 
-expected_version_name="$(json_get "$SPEC" '.config.app.versionName // empty')"
+expected_version_name="$(json_get "$SPEC" '.buildInput.app.versionName // empty')"
 expected_version_code="$(read_app_version_code "$SPEC")"
-package_name="$(json_get "$SPEC" '.config.app.applicationId // empty')"
+package_name="$(json_get "$SPEC" '.buildInput.app.applicationId // empty')"
 assert_non_empty "package name" "$package_name"
 assert_non_empty "versionName" "$expected_version_name"
 
