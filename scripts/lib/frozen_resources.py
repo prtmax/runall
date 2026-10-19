@@ -77,9 +77,9 @@ def digest_bytes(data):
     return hashlib.sha256(data).hexdigest()
 
 
-MAX_PACKAGING_RESOURCES = 52
+MAX_PACKAGING_RESOURCES = 512
 MAX_PACKAGING_BYTES = 36 * 1024 * 1024
-PACKAGING_CONTENT_TYPES = {"image/png", "application/zip"}
+PACKAGING_CONTENT_TYPES = {"image/png", "image/svg+xml", "image/webp", "application/zip"}
 PACKAGING_FIELDS = {"ref", "digest", "contentType", "contentBase64"}
 
 

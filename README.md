@@ -70,6 +70,13 @@ selected languages, labels and locale defaults. Prepare treats them as bounded,
 digest-verified bytes; Orion validates the archive before generating bundled assets.
 Raw FTL packaging responses are rejected.
 
+Frozen `feature_asset` resources retain registry logical keys and exact content
+references. Prepare supports PNG/SVG/WebP bytes as well as language ZIPs, accepts
+at most 512 resource objects and 36 MiB total, and rejects missing, extra, repeated
+or digest-mismatched refs. Orion validates selected presentation requirements and
+generates the bundled registry index; development assets cannot fill missing
+product requirements.
+
 Local contract tests (no network):
 
 ```bash

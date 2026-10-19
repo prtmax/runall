@@ -54,17 +54,28 @@ jq --arg icon "$icon_digest" --arg locale "$locale_digest" --slurpfile theme "$t
   .platform = "android" | .targets = ["apk"]
 ' "$work/vector.json" > "$work/spec.json"
 printf '{"app-studio/icon":"icon.png","app-studio/en":"languages.zip"}\n' > "$work/index.json"
-PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT_DIR" "$work" <<'PY'
-import base64, json, sys
+PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT_DIR" "$work" "$ORION_ROOT" <<'PY'
+import base64, hashlib, json, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]) / "scripts/lib"))
 from frozen_resources import materialize_packaging_response
 root = Path(sys.argv[2])
 spec = json.loads((root / "spec.json").read_text())
 index = json.loads((root / "index.json").read_text())
+sys.path.insert(0, str(Path(sys.argv[3]) / "tools/app_assembler"))
+from feature_assets import icon_requirements
+for selection in spec["buildInput"]["features"]:
+    for requirement in icon_requirements(selection["featureKey"], selection["presentationKey"]):
+        key = f"assets/themes/{selection['presentationKey']}/{requirement['key']}.png"
+        if any(row.get("key") == key for row in spec["buildInput"]["resources"]):
+            continue
+        spec["buildInput"]["resources"].append({"kind": "feature_asset", "key": key,
+            "ref": "app-studio/icon", "digest": hashlib.sha256((root / "icon.png").read_bytes()).hexdigest(),
+            "contentType": "image/png"})
+(root / "spec.json").write_text(json.dumps(spec))
 payload = [{"ref": row["ref"], "digest": row["digest"], "contentType": row["contentType"],
             "contentBase64": base64.b64encode((root / index[row["ref"]]).read_bytes()).decode()}
-           for row in spec["buildInput"]["resources"]]
+           for row in {row["ref"]: row for row in spec["buildInput"]["resources"]}.values()]
 (root / "packaging-response.json").write_text(json.dumps(payload))
 materialize_packaging_response(root / "spec.json", root / "packaging-response.json", root / "prepared")
 PY
@@ -74,6 +85,17 @@ grep -q 'MellowHomePresentation' "$generated"
 grep -q 'BreezePersonalCenterPresentation' "$generated"
 grep -q 'colors.primary' "$generated"
 grep -q '#0B6BCB' "$generated"
+python3 - "$work" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+spec = json.loads((root / "spec.json").read_text())
+index = json.loads((root / "output/overlay/assets/build/bundled_theme_assets.json").read_text())["assets"]
+expected = {row["key"] for row in spec["buildInput"]["resources"] if row["kind"] == "feature_asset"}
+assert set(index) == expected and expected
+for path in index.values():
+    assert (root / "output/overlay" / path).read_bytes() == (root / "icon.png").read_bytes()
+PY
 cmp "$work/en.ftl" "$work/output/overlay/assets/fluent/en.ftl"
 jq -e '.defaultLocale == "en" and .referenceLocale == "en" and .locales[0].label == "English"' "$work/output/overlay/assets/fluent/manifest.json" >/dev/null
 
@@ -105,7 +127,7 @@ if info.get("CFBundleDisplayName") != "$(APP_DISPLAY_NAME)":
 PY
 oversized_digest="$(sha256_file "$work/oversized.png")"
 jq --arg digest "$oversized_digest" '.buildInput.resources[0].digest=$digest | .buildInput.resources[0].ref="app-studio/oversized"' "$work/ios-spec.json" > "$work/oversized-spec.json"
-printf '{"app-studio/oversized":"oversized.png","app-studio/en":"languages.zip"}\n' > "$work/oversized-index.json"
+jq '. + {"app-studio/oversized":"oversized.png"}' "$work/index.json" > "$work/oversized-index.json"
 if (cd "${ORION_ROOT}/apps/rigel" && python3 "$assembler" "$work/oversized-spec.json" "$work/oversized-output" "$work/oversized-index.json") >/dev/null 2>&1; then
   log "PNG expanding beyond its declared scanlines was accepted"
   exit 1
