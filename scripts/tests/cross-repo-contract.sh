@@ -95,6 +95,13 @@ expected = {row["key"] for row in spec["buildInput"]["resources"] if row["kind"]
 assert set(index) == expected and expected
 for path in index.values():
     assert (root / "output/overlay" / path).read_bytes() == (root / "icon.png").read_bytes()
+import xml.etree.ElementTree as ET
+manifest = ET.parse(root / "output/overlay/android/app/src/main/AndroidManifest.xml")
+android = "{http://schemas.android.com/apk/res/android}"
+tools = "{http://schemas.android.com/tools}"
+network = [row for row in manifest.getroot().findall("uses-permission")
+           if row.get(android + "name") == "android.permission.INTERNET"]
+assert len(network) == 1 and network[0].get(tools + "node") == "replace"
 PY
 cmp "$work/en.ftl" "$work/output/overlay/assets/fluent/en.ftl"
 jq -e '.defaultLocale == "en" and .referenceLocale == "en" and .locales[0].label == "English"' "$work/output/overlay/assets/fluent/manifest.json" >/dev/null

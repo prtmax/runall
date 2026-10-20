@@ -24,7 +24,7 @@
     "features": [{"featureKey": "HOME", "presentationKey": "MELLOW"}],
     "themes": [{"familyKey": "MELLOW", "themeKey": "default", "tokens": {}}],
     "resources": [],
-    "nativePermissions": {"revision": 0, "defaultLocale": "en", "android": [], "iosUsage": [], "iosEntitlements": []},
+    "nativePermissions": {"revision": 0, "defaultLocale": "en", "android": [{"name": "android.permission.INTERNET"}], "iosUsage": [], "iosEntitlements": []},
     "signing": {"profileRef": "signing-profile:400"},
     "surfaces": [{"key": "APP_BAR", "items": [{"featureKey": "HOME", "label": "Home"}]}]
   },
