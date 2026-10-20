@@ -1,4 +1,4 @@
-"""Frozen brand and language files for the Orion release generator.
+"""Frozen native packaging resources for the Orion app assembler.
 
 The authorized index maps each spec ref to a local path. Paths may be absolute
 or relative to the index file, but the resolved file must stay inside the index
@@ -24,19 +24,17 @@ def load_json(path):
 
 
 def required_resources(spec):
-    config = spec["config"]
     required = {}
-    for field in ("brandAssets", "languages"):
-        rows = config.get(field)
-        if not isinstance(rows, list) or not rows:
-            fail(f"config.{field} is missing")
-        for row in rows:
-            ref, digest = row.get("ref"), row.get("digest")
-            if not isinstance(ref, str) or not isinstance(digest, str):
-                fail(f"config.{field} ref is invalid")
-            if ref in required and required[ref] != digest:
-                fail("frozen ref digest conflict")
-            required[ref] = digest
+    rows = spec.get("buildInput", {}).get("resources")
+    if not isinstance(rows, list):
+        fail("buildInput.resources is missing")
+    for row in rows:
+        ref, digest = row.get("ref"), row.get("digest")
+        if not isinstance(ref, str) or not isinstance(digest, str):
+            fail("buildInput.resources ref is invalid")
+        if ref in required and required[ref] != digest:
+            fail("frozen ref digest conflict")
+        required[ref] = digest
     return required
 
 
@@ -76,12 +74,12 @@ def locate_resource(index_path, raw):
 
 
 def digest_bytes(data):
-    return "sha256:" + hashlib.sha256(data).hexdigest()
+    return hashlib.sha256(data).hexdigest()
 
 
-MAX_PACKAGING_RESOURCES = 52
+MAX_PACKAGING_RESOURCES = 512
 MAX_PACKAGING_BYTES = 36 * 1024 * 1024
-PACKAGING_CONTENT_TYPES = {"image/png", "text/plain; charset=utf-8"}
+PACKAGING_CONTENT_TYPES = {"image/png", "image/svg+xml", "image/webp", "application/zip"}
 PACKAGING_FIELDS = {"ref", "digest", "contentType", "contentBase64"}
 
 

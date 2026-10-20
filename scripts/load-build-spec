@@ -62,10 +62,10 @@ fi
 
 validate_build_spec_document "$OUTPUT" "$RUN_ID"
 
-if [[ -n "${EXPECTED_SPEC_HASH:-}" ]]; then
-  actual="$(json_get "$OUTPUT" '.specHash')"
-  if [[ "$actual" != "$EXPECTED_SPEC_HASH" ]]; then
-    log "specHash mismatch"
+if [[ -n "${EXPECTED_SPEC_DIGEST:-}" ]]; then
+  actual="$(json_get "$OUTPUT" '.specDigest')"
+  if [[ "$actual" != "$EXPECTED_SPEC_DIGEST" ]]; then
+    log "specDigest mismatch"
     exit 1
   fi
 fi

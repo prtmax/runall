@@ -11,7 +11,7 @@ usage() {
   cat <<'EOF'
 Usage: fetch-packaging-resources --spec <path> --output <dir> [--index <path>]
 
-When the spec names app-studio/* resources, download
+When buildInput names app-studio/* resources, download
 ${COSMOS_BUILD_SPEC_URL%/}/${BUILD_RUN_ID}/packaging-resources with the prepare
 credential already in the environment. Decode only those spec refs, recompute
 SHA-256, and write a local index. Non-studio refs are copied from the authorized

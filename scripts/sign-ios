@@ -53,8 +53,8 @@ if [[ "$platform" != "ios" ]]; then
   exit 1
 fi
 
-bundle_id="$(json_get "$SPEC" '.config.app.bundleId // empty')"
-expected_version_name="$(json_get "$SPEC" '.config.app.versionName // empty')"
+bundle_id="$(json_get "$SPEC" '.buildInput.app.bundleId // empty')"
+expected_version_name="$(json_get "$SPEC" '.buildInput.app.versionName // empty')"
 expected_version_code="$(read_app_version_code "$SPEC")"
 assert_non_empty "bundle id" "$bundle_id"
 assert_non_empty "versionName" "$expected_version_name"

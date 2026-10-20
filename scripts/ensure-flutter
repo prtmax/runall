@@ -34,21 +34,19 @@ assert_non_empty "--workspace" "$WORKSPACE"
 assert_non_empty "--env-file" "$ENV_FILE"
 validate_build_spec_document "$SPEC"
 
-pinned="$(json_get "$SPEC" '.config.orion.toolchainVersion')"
-assert_non_empty "config.orion.toolchainVersion" "$pinned"
+pinned="$(json_get "$SPEC" '.buildInput.source.flutterVersion')"
+assert_non_empty "buildInput.source.flutterVersion" "$pinned"
 
 fvmrc=""
 if [[ -f "${WORKSPACE}/.fvmrc" ]]; then
   fvmrc="${WORKSPACE}/.fvmrc"
-elif [[ -f "${WORKSPACE}/orion/.fvmrc" ]]; then
-  fvmrc="${WORKSPACE}/orion/.fvmrc"
 elif [[ -f "${WORKSPACE}/apps/rigel/.fvmrc" ]]; then
   fvmrc="${WORKSPACE}/apps/rigel/.fvmrc"
 fi
 if [[ -n "$fvmrc" ]]; then
   declared="$(jq -r '.flutter // empty' "$fvmrc")"
   if [[ "$declared" != "$pinned" ]]; then
-    log ".fvmrc flutter does not match config.orion.toolchainVersion"
+    log ".fvmrc flutter does not match buildInput.source.flutterVersion"
     exit 1
   fi
 fi
@@ -106,7 +104,7 @@ mapfile -t bins < <(resolve_pinned_binaries "$pinned")
 flutter_bin="${bins[0]}"
 dart_bin="${bins[1]}"
 if ! "$flutter_bin" --version | grep -F "$pinned" >/dev/null; then
-  log "installed Flutter does not match config.orion.toolchainVersion"
+  log "installed Flutter does not match buildInput.source.flutterVersion"
   exit 1
 fi
 
