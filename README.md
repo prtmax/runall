@@ -49,6 +49,15 @@ this repository. Missing material or tools fail the job; they do not produce a d
 
 ## Scripts
 
+The executor accepts immutable `cosmos.native-build.v1` snapshots and
+`cosmos.native-build.v2` snapshots containing an `app-appearance.v1` envelope.
+The outer and input schema versions must match. Appearance is forbidden on v1;
+v2 requires a unique style collection with a valid default style and default
+theme for each style. The reviewed Orion assembler validates complete feature
+coverage, theme snapshots and the default-style projection before generating
+the package. Prepare does not fetch current appearance settings or color tokens.
+All bundled styles and themes come from the frozen input and resource manifest.
+
 | Script | Role |
 |--------|------|
 | `scripts/exchange-build-credential` | GitHub OIDC → Cosmos bearer token |

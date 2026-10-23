@@ -116,7 +116,7 @@ jq '.buildInput.environment.runtimeBaseUrl="https://example.test/${runtime}" | .
 literal="$work/literal-output/overlay/lib/bootstrap/development_assembly.dart"
 grep -Fq 'https://example.test/\${runtime}' "$literal"
 grep -Fq '\${title}' "$literal"
-grep -q 'presentations: const' "$generated"
+grep -q 'presentations:' "$generated"
 test -f "$work/output/overlay/android/app/src/main/AndroidManifest.xml"
 grep -q 'android:label="Native Demo"' "$work/output/overlay/android/app/src/main/AndroidManifest.xml"
 grep -q 'ANDROID_APPLICATION_ID' "$work/output/overlay/android/app/build.gradle.kts"
@@ -139,5 +139,77 @@ if (cd "${ORION_ROOT}/apps/rigel" && python3 "$assembler" "$work/oversized-spec.
   log "PNG expanding beyond its declared scanlines was accepted"
   exit 1
 fi
+
+log "contract: freeze, stage and assemble two complete styles with independent color themes"
+python3 - "$ROOT_DIR" "$work" "$ORION_ROOT" <<'PY'
+import base64, copy, hashlib, json, sys
+from pathlib import Path
+root = Path(sys.argv[2])
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts/lib"))
+sys.path.insert(0, str(Path(sys.argv[3]) / "tools/app_assembler"))
+from frozen_resources import materialize_packaging_response
+from feature_assets import icon_requirements
+spec = json.loads((root / "spec.json").read_text())
+build = spec["buildInput"]
+spec["schemaVersion"] = build["schemaVersion"] = "cosmos.native-build.v2"
+tokens = build["themes"][0]["tokens"]
+def theme(style, ref, name, color):
+    values = dict(tokens, **{"colors.primary": color})
+    return {"familyKey": style, "themeKey": name.lower(), "name": name,
+            "themeRef": ref, "revision": 1, "tokens": values,
+            "digest": hashlib.sha256(json.dumps(values, sort_keys=True, ensure_ascii=False,
+                                               separators=(",", ":")).encode()).hexdigest()}
+styles = []
+for key, ref in [("MELLOW", "11"), ("BREEZE", "21")]:
+    selections = [{"featureKey": feature, "presentationKey": key}
+                  for feature in ["APP_BAR", "HOME", "PERSONAL_CENTER"]]
+    themes = [theme(key, ref, "Blue", "#0B6BCB")]
+    if key == "MELLOW":
+        themes.append(theme(key, "12", "Red", "#FF0000"))
+    styles.append({"styleKey": key, "name": key.title(), "defaultThemeRef": ref,
+                   "features": selections, "themes": themes})
+build["appearance"] = {"version": "app-appearance.v1", "defaultStyleKey": "MELLOW", "styles": styles}
+build["features"] = styles[0]["features"]
+build["themes"] = [dict(styles[0]["themes"][0], featureKey=row["featureKey"]) for row in build["features"]]
+build["resources"] = [row for row in build["resources"] if row["kind"] != "feature_asset"]
+for style in styles:
+    for selection in style["features"]:
+        for requirement in icon_requirements(selection["featureKey"], selection["presentationKey"]):
+            key = f"assets/themes/{style['styleKey']}/{requirement['key']}.png"
+            if any(row.get("key") == key for row in build["resources"]):
+                continue
+            build["resources"].append({"kind": "feature_asset", "key": key,
+                "ref": "app-studio/icon", "digest": hashlib.sha256((root / "icon.png").read_bytes()).hexdigest(),
+                "contentType": "image/png"})
+(root / "appearance-spec.json").write_text(json.dumps(spec))
+index = json.loads((root / "index.json").read_text())
+payload = [{"ref": row["ref"], "digest": row["digest"], "contentType": row["contentType"],
+            "contentBase64": base64.b64encode((root / index[row["ref"]]).read_bytes()).decode()}
+           for row in {row["ref"]: row for row in build["resources"]}.values()]
+(root / "appearance-packaging.json").write_text(json.dumps(payload))
+materialize_packaging_response(root / "appearance-spec.json", root / "appearance-packaging.json", root / "appearance-prepared")
+PY
+(cd "${ORION_ROOT}/apps/rigel" && python3 "$assembler" "$work/appearance-spec.json" "$work/appearance-output" "$work/appearance-prepared/index.json")
+appearance_generated="$work/appearance-output/overlay/lib/bootstrap/development_assembly.dart"
+grep -q 'MellowHomePresentation' "$appearance_generated"
+grep -q 'BreezeHomePresentation' "$appearance_generated"
+grep -q 'MellowPersonalCenterPresentation' "$appearance_generated"
+grep -q 'BreezePersonalCenterPresentation' "$appearance_generated"
+grep -q 'MellowNavigationPresentation' "$appearance_generated"
+grep -q 'BreezeNavigationPresentation' "$appearance_generated"
+grep -q '#FF0000' "$appearance_generated"
+python3 - "$work" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+spec = json.loads((root / "appearance-spec.json").read_text())
+index = json.loads((root / "appearance-output/overlay/assets/build/bundled_theme_assets.json").read_text())["assets"]
+expected = {row["key"] for row in spec["buildInput"]["resources"] if row["kind"] == "feature_asset"}
+assert set(index) == expected
+assert any(key.startswith("assets/themes/MELLOW/") for key in index)
+assert any(key.startswith("assets/themes/BREEZE/") for key in index)
+for path in index.values():
+    assert (root / "appearance-output/overlay" / path).read_bytes() == (root / "icon.png").read_bytes()
+PY
 
 log "cross-repo native contract passed"
