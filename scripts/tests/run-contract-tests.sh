@@ -15,6 +15,41 @@ jq --arg digest "$spec_digest" '.specDigest = $digest' "$work/input.json" > "$wo
 
 BUILD_SPEC_FILE="$work/spec.json" "${ROOT_DIR}/scripts/load-build-spec" --output "$work/out.json" --run-id 900
 
+log "contract: versioned multi-style appearance envelope"
+jq '
+  .schemaVersion = "cosmos.native-build.v2" |
+  .buildInput.schemaVersion = "cosmos.native-build.v2" |
+  .buildInput.appearance = {
+    version: "app-appearance.v1", defaultStyleKey: "MELLOW",
+    styles: [{styleKey: "MELLOW", name: "Mellow", defaultThemeRef: "1",
+      features: .buildInput.features,
+      themes: [.buildInput.themes[0] + {themeRef: "1", revision: 1}]}]
+  }
+' "$work/spec.json" > "$work/appearance-raw.json"
+bind_spec_digests() {
+  local source="$1" destination="$2" input_digest spec_digest
+  input_digest="$(node "${ROOT_DIR}/scripts/lib/native_digest.js" input "$source")"
+  jq --arg digest "$input_digest" '.inputDigest=$digest' "$source" > "$work/rebound-input.json"
+  spec_digest="$(node "${ROOT_DIR}/scripts/lib/native_digest.js" spec "$work/rebound-input.json")"
+  jq --arg digest "$spec_digest" '.specDigest=$digest' "$work/rebound-input.json" > "$destination"
+}
+bind_spec_digests "$work/appearance-raw.json" "$work/appearance.json"
+BUILD_SPEC_FILE="$work/appearance.json" "${ROOT_DIR}/scripts/load-build-spec" --output "$work/appearance-out.json" --run-id 900
+for invalid_appearance in \
+  '.buildInput.schemaVersion="cosmos.native-build.v1"' \
+  '.schemaVersion="cosmos.native-build.v1" | .buildInput.schemaVersion="cosmos.native-build.v1"' \
+  'del(.buildInput.appearance)' \
+  '.buildInput.appearance.defaultStyleKey="BREEZE"' \
+  '.buildInput.appearance.styles[0].defaultThemeRef="missing"' \
+  '.buildInput.appearance.styles += .buildInput.appearance.styles'; do
+  jq "$invalid_appearance" "$work/appearance.json" > "$work/invalid-appearance-raw.json"
+  bind_spec_digests "$work/invalid-appearance-raw.json" "$work/invalid-appearance.json"
+  if BUILD_SPEC_FILE="$work/invalid-appearance.json" "${ROOT_DIR}/scripts/load-build-spec" --output "$work/rejected.json" 2>/dev/null; then
+    log "invalid appearance envelope was accepted: $invalid_appearance"
+    exit 1
+  fi
+done
+
 jq '.buildInput.app.displayName = "tampered"' "$work/spec.json" > "$work/tampered.json"
 if BUILD_SPEC_FILE="$work/tampered.json" "${ROOT_DIR}/scripts/load-build-spec" --output "$work/out.json" 2>/dev/null; then
   log "tampered native build input was accepted"
@@ -33,6 +68,10 @@ if [[ -n "${COSMOS_ROOT:-}" ]]; then
   expected="$(jq -r '.[] | select(.kind == "build") | .digest' "$vector")"
   actual="$(node "${ROOT_DIR}/scripts/lib/native_digest.js" input "$work/vector.json")"
   [[ "$actual" == "$expected" ]] || { log "RFC 8785 build vector mismatch"; exit 1; }
+  jq '{buildInput:(.[] | select(.kind == "build-v2") | .normalized)}' "$vector" > "$work/appearance-vector.json"
+  expected="$(jq -r '.[] | select(.kind == "build-v2") | .digest' "$vector")"
+  actual="$(node "${ROOT_DIR}/scripts/lib/native_digest.js" input "$work/appearance-vector.json")"
+  [[ -n "$expected" && "$actual" == "$expected" ]] || { log "RFC 8785 appearance build vector mismatch"; exit 1; }
 fi
 
 printf '{"buildInput":{"tokens":{"one":1e-7,"large":1e30,"astral":"😀","bmp":"�"}}}\n' > "$work/jcs.json"

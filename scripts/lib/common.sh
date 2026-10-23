@@ -103,11 +103,30 @@ validate_build_spec_document() {
   local spec_file="$1" expected_run_id="${2:-}"
 
   require_cmd jq
-  jq -e '.schemaVersion == "cosmos.native-build.v1"' "$spec_file" >/dev/null
+  jq -e '.schemaVersion == "cosmos.native-build.v1" or .schemaVersion == "cosmos.native-build.v2"' "$spec_file" >/dev/null
   jq -e '.status == "ready"' "$spec_file" >/dev/null
   jq -r '.specDigest' "$spec_file" | grep -Eq '^[0-9a-f]{64}$'
   jq -r '.inputDigest' "$spec_file" | grep -Eq '^[0-9a-f]{64}$'
-  jq -e '.buildInput.schemaVersion == "cosmos.native-build.v1"' "$spec_file" >/dev/null
+  jq -e '.buildInput.schemaVersion == .schemaVersion' "$spec_file" >/dev/null
+  jq -e '
+    if .schemaVersion == "cosmos.native-build.v1" then
+      (.buildInput | has("appearance") | not)
+    else
+      .buildInput.appearance as $appearance |
+      $appearance.version == "app-appearance.v1" and
+      ($appearance.styles | type == "array" and length > 0) and
+      ($appearance.defaultStyleKey | type == "string" and length > 0) and
+      ([$appearance.styles[].styleKey] | length == (unique | length)) and
+      any($appearance.styles[]; .styleKey == $appearance.defaultStyleKey) and
+      all($appearance.styles[];
+        . as $style |
+        (.styleKey | type == "string" and length > 0) and
+        (.features | type == "array" and length > 0) and
+        (.themes | type == "array" and length > 0) and
+        (.defaultThemeRef | type == "string" and length > 0) and
+        any($style.themes[]; .themeRef == $style.defaultThemeRef))
+    end
+  ' "$spec_file" >/dev/null
   jq -e '.buildInput.source.flutterVersion | type == "string" and length > 0' "$spec_file" >/dev/null
   source_origin_url "$(json_get "$spec_file" '.buildInput.source.repository')" >/dev/null
   jq -r '.buildInput.source.commit' "$spec_file" | grep -Eq '^[0-9a-f]{40}$'
