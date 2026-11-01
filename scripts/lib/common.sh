@@ -59,7 +59,7 @@ resolve_release_app_dir() {
     log "workspace source commit mismatch"
     exit 1
   fi
-  if [[ -f "$workspace/tools/app_assembler/assemble.py" ]]; then
+  if [[ -f "$workspace/tools/rigel_build/bin/assemble.dart" ]]; then
     if [[ "$source_commit" != "$orion_commit" ]]; then
       log "direct Orion checkout must match buildInput.source.commit"
       exit 1
@@ -242,4 +242,12 @@ report_sign_result() {
       --arg sha256 "$digest" \
       '{target: $target, packageName: $packageName, versionName: $versionName, versionCode: $versionCode, certSha256: $certSha256, byteSize: $byteSize, sha256: $sha256}')" \
     "${COSMOS_BUILD_CALLBACK_URL%/}/build-runs/${BUILD_RUN_ID}/sign-results" >/dev/null
+}
+
+# Only execute the executor-owned package, never a source-provided signing tool.
+run_dart_tool() {
+  local executor_root
+  executor_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  require_cmd dart
+  dart run "${executor_root}/tools/cosmos_executor/bin/executor.dart" "$@"
 }

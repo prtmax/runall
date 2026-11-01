@@ -118,8 +118,8 @@ if [[ "$1" == "-C" ]]; then
     "cat-file -e") [[ "${MOCK_TRUSTED:-}" == 1 ]]; exit ;;
     "merge-base --is-ancestor") [[ "${MOCK_TRUSTED:-}" == 1 ]]; exit ;;
     "checkout --detach")
-      mkdir -p "$root/tools/app_assembler" "$root/apps/rigel"
-      printf 'assembler\n' > "$root/tools/app_assembler/assemble.py"
+      mkdir -p "$root/tools/rigel_build/bin" "$root/apps/rigel"
+      printf 'assembler\n' > "$root/tools/rigel_build/bin/assemble.dart"
       cp "${MOCK_LOCK:?}" "$root/pubspec.lock"
       exit 0
       ;;
@@ -277,29 +277,7 @@ for script in sign-android sign-aab sign-ios; do
 done
 
 log "contract: compile stages remain uncredentialed and signing/finalize stay isolated"
-python3 - "${ROOT_DIR}/.github/workflows/android-build.yml" "${ROOT_DIR}/.github/workflows/reusable-prepare.yml" <<'PY'
-from pathlib import Path
-import sys
-workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
-def job(start, end):
-    body = workflow.split(f"  {start}:\n", 1)[1]
-    return body.split(f"\n  {end}:\n", 1)[0]
-android = job("build-android", "sign-android")
-ios = job("build-ios", "sign-ios")
-for name, body in (("android", android), ("ios", ios)):
-    for forbidden in ("id-token: write", "COSMOS_BUILD_CREDENTIAL", "COSMOS_BUILD_REPOSITORY_TOKEN", "COSMOS_BUILD_SIGN_MATERIAL_URL", "COSMOS_BUILD_SPEC_URL"):
-        if forbidden in body:
-            raise SystemExit(f"{name} compile stage contains {forbidden}")
-    if "contents: read" not in body or "RUNALL_FROZEN_RESOURCE_ROOT" not in body:
-        raise SystemExit(f"{name} compile stage lost its frozen unprivileged boundary")
-prepare = Path(sys.argv[2]).read_text(encoding="utf-8")
-for required in ("id-token: write", "exchange-build-credential", "fetch-packaging-resources", "checkout-source"):
-    if required not in prepare:
-        raise SystemExit(f"prepare stage missing {required}")
-for required in ("reusable-sign-android.yml", "reusable-sign-ios.yml", "reusable-finalize-android.yml", "reusable-finalize-ios.yml"):
-    if required not in workflow:
-        raise SystemExit(f"workflow missing isolated stage {required}")
-PY
+(cd "${ROOT_DIR}/tools/cosmos_executor" && dart test test/workflow_test.dart)
 if grep -q 'COSMOS_BUILD_REPOSITORY_TOKEN\|COSMOS_BUILD_CREDENTIAL\|id-token' "${ROOT_DIR}/scripts/build-android" "${ROOT_DIR}/scripts/build-ios"; then
   log "compile script references a privileged credential"
   exit 1

@@ -46,12 +46,7 @@ if [[ -z "$INDEX" && -n "${RUNALL_FROZEN_RESOURCE_ROOT:-}" ]]; then
   INDEX="${RUNALL_FROZEN_RESOURCE_ROOT%/}/index.json"
 fi
 
-needs_studio="$(python3 - "$SPEC" "${ROOT_DIR}/scripts/lib" <<'PY'
-import sys
-sys.path.insert(0, sys.argv[2])
-from frozen_resources import spec_requests_studio
-print("yes" if spec_requests_studio(sys.argv[1]) else "no")
-PY
+needs_studio="$(run_dart_tool needs-studio "$SPEC"
 )"
 if [[ "$needs_studio" != "yes" ]]; then
   log "spec has no App Studio packaging resources"
@@ -82,13 +77,5 @@ else
   fi
 fi
 
-python3 - "$SPEC" "$response" "$OUTPUT" "$INDEX" "${ROOT_DIR}/scripts/lib" <<'PY'
-import sys
-from pathlib import Path
-
-sys.path.insert(0, sys.argv[5])
-from frozen_resources import materialize_packaging_response
-
-materialize_packaging_response(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
-PY
+run_dart_tool package-response "$SPEC" "$response" "$OUTPUT" "$INDEX"
 log "App Studio packaging resources verified"

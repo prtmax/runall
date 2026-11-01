@@ -57,7 +57,7 @@ assert_non_empty "BUILD_RUN_ID" "${BUILD_RUN_ID:-}"
 
 require_cmd curl
 require_cmd jq
-require_cmd python3
+require_cmd dart
 
 if [[ -z "$FILE_NAME" ]]; then
   FILE_NAME="$(basename "$ARTIFACT")"
@@ -122,26 +122,7 @@ post_json "$authorize_url" "$request_body" "$workdir/grant.json" || {
   exit 1
 }
 
-python3 - "$workdir/grant.json" "$TARGET" "$FILE_NAME" "$CONTENT_TYPE" "$size" "$sha256" <<'PY'
-import json, sys
-from urllib.parse import urlparse
-grant = json.load(open(sys.argv[1], encoding="utf-8"))
-target, file_name, content_type, size, digest = sys.argv[2:]
-if grant.get("target") != target or grant.get("fileName") != file_name or grant.get("contentType") != content_type:
-    raise SystemExit("upload grant does not match the artifact")
-if grant.get("byteSize") != int(size) or grant.get("sha256") != digest:
-    raise SystemExit("upload grant size or digest does not match the artifact")
-key = grant.get("objectKey") or ""
-if not key or key.startswith("/") or ".." in key or "\\" in key or "://" in key:
-    raise SystemExit("upload grant objectKey rejected")
-method = grant.get("method") or "PUT"
-if method != "PUT":
-    raise SystemExit("upload grant method must be PUT")
-url = grant.get("url") or grant.get("uploadUrl") or grant.get("presignedUrl") or ""
-parsed = urlparse(url)
-if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-    raise SystemExit("upload URL must be https without credentials")
-PY
+run_dart_tool upload-grant "$workdir/grant.json" "$TARGET" "$FILE_NAME" "$CONTENT_TYPE" "$size" "$sha256"
 
 put_url="$(jq -r '.url // .uploadUrl // .presignedUrl' "$workdir/grant.json")"
 headers_json="$(jq -c '.headers // .uploadHeaders // {}' "$workdir/grant.json")"

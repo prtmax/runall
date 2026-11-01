@@ -1,0 +1,9 @@
+name: cosmos_executor
+publish_to: none
+environment:
+  sdk: '>=3.13.0 <4.0.0'
+dependencies:
+  crypto: 3.0.6
+  xml: 6.6.1
+dev_dependencies:
+  test: 1.26.3

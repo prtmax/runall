@@ -84,7 +84,7 @@ require_cmd openssl
 require_cmd security
 require_cmd codesign
 require_cmd zip
-require_cmd python3
+require_cmd dart
 
 curl --fail-with-body -sS \
   -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
@@ -120,7 +120,7 @@ fi
 # codesign identities are keychain names or SHA-1 hashes. The SHA-256
 # fingerprint checked above is not a signing identity.
 keychain="$tmpdir/signing.keychain-db"
-keychain_pass="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+keychain_pass="$(run_dart_tool random-password)"
 security create-keychain -p "$keychain_pass" "$keychain"
 security set-keychain-settings -lut 600 "$keychain"
 security unlock-keychain -p "$keychain_pass" "$keychain"
@@ -136,31 +136,7 @@ fi
 unset keychain_pass
 
 security cms -D -i "$tmpdir/profile.mobileprovision" > "$tmpdir/profile.plist"
-python3 - "$tmpdir/profile.plist" "$bundle_id" "$team_id" "$expected_version_name" "$expected_version_code" <<'PY'
-import datetime
-import plistlib
-import sys
-from pathlib import Path
-
-profile = plistlib.loads(Path(sys.argv[1]).read_bytes())
-bundle_id, team_id = sys.argv[2], sys.argv[3]
-teams = profile.get("TeamIdentifier") or []
-if team_id not in teams:
-    sys.exit("profile team mismatch")
-app_id = (profile.get("Entitlements") or {}).get("application-identifier", "")
-if app_id != f"{team_id}.{bundle_id}":
-    sys.exit("profile bundle id mismatch")
-expires = profile.get("ExpirationDate")
-if not isinstance(expires, datetime.datetime):
-    sys.exit("profile expiration missing")
-if expires.tzinfo is None:
-    expires = expires.replace(tzinfo=datetime.timezone.utc)
-if expires <= datetime.datetime.now(datetime.timezone.utc):
-    sys.exit("profile expired")
-name = profile.get("Name") or ""
-if "debug" in name.lower():
-    sys.exit("debug profile cannot sign a release IPA")
-PY
+run_dart_tool profile "$tmpdir/profile.plist" "$bundle_id" "$team_id"
 
 app_name="$(basename "$INPUT")"
 mkdir -p "$tmpdir/Payload"
@@ -171,31 +147,8 @@ if [[ ! -f "$info" ]]; then
   log "Info.plist missing from unsigned app"
   exit 1
 fi
-python3 - "$info" "$bundle_id" "$expected_version_name" "$expected_version_code" <<'PY'
-import plistlib
-import sys
-from pathlib import Path
-
-info = plistlib.loads(Path(sys.argv[1]).read_bytes())
-bundle_id, version_name, version_code = sys.argv[2], sys.argv[3], sys.argv[4]
-if info.get("CFBundleIdentifier") != bundle_id:
-    sys.exit("app bundle id mismatch")
-if str(info.get("CFBundleShortVersionString", "")) != version_name:
-    sys.exit("app version mismatch")
-if str(info.get("CFBundleVersion", "")) != version_code:
-    sys.exit("app build number mismatch")
-PY
-python3 - "$tmpdir/profile.plist" "$tmpdir/entitlements.plist" <<'PY'
-import plistlib
-import sys
-from pathlib import Path
-
-profile = plistlib.loads(Path(sys.argv[1]).read_bytes())
-entitlements = profile.get("Entitlements")
-if not isinstance(entitlements, dict) or not entitlements:
-    raise SystemExit("profile entitlements missing")
-Path(sys.argv[2]).write_bytes(plistlib.dumps(entitlements))
-PY
+run_dart_tool app-info "$info" "$bundle_id" "$expected_version_name" "$expected_version_code"
+run_dart_tool entitlements "$tmpdir/profile.plist" "$tmpdir/entitlements.plist"
 signed_app="$tmpdir/Payload/$app_name"
 while IFS= read -r nested; do
   [[ "$nested" == "$signed_app" ]] && continue
