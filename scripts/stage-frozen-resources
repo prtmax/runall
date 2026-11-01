@@ -45,13 +45,5 @@ if [[ ! -f "$INDEX" ]]; then
   exit 1
 fi
 
-python3 - "$SPEC" "$INDEX" "$OUTPUT" "${ROOT_DIR}/scripts/lib" <<'PY'
-import sys
-from pathlib import Path
-
-sys.path.insert(0, sys.argv[4])
-from frozen_resources import stage
-
-stage(sys.argv[1], sys.argv[2], sys.argv[3])
-PY
+run_dart_tool stage "$SPEC" "$INDEX" "$OUTPUT"
 log "frozen resources staged"

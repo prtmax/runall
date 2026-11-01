@@ -81,20 +81,7 @@ if [[ ! -d "$app_path" || -L "$app_path" ]]; then
 fi
 rm -rf "${OUTPUT_DIR}/Runner.app"
 cp -a "$app_path" "${OUTPUT_DIR}/Runner.app"
-python3 - "${OUTPUT_DIR}/Runner.app/Info.plist" "$bundle_id" "$display_name" "$version_name" "$version_code" <<'PY'
-import plistlib, sys
-from pathlib import Path
-info = plistlib.loads(Path(sys.argv[1]).read_bytes())
-bundle_id, display_name, version_name, version_code = sys.argv[2:]
-if info.get("CFBundleIdentifier") != bundle_id:
-    raise SystemExit("built app bundle id mismatch")
-if info.get("CFBundleDisplayName") != display_name:
-    raise SystemExit("built app display name mismatch")
-if str(info.get("CFBundleShortVersionString", "")) != version_name:
-    raise SystemExit("built app version mismatch")
-if str(info.get("CFBundleVersion", "")) != version_code:
-    raise SystemExit("built app build number mismatch")
-PY
+run_dart_tool app-info "${OUTPUT_DIR}/Runner.app/Info.plist" "$bundle_id" "$version_name" "$version_code" "$display_name"
 # upload-artifact does not preserve .app symlinks or modes. Pack them in tar.
 rm -f "${OUTPUT_DIR}/Runner.app.tar"
 tar -cf "${OUTPUT_DIR}/Runner.app.tar" -C "$OUTPUT_DIR" Runner.app

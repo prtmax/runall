@@ -117,3 +117,29 @@ and OIDC; keep old secrets only until Mercury cutover completes.
 This repository change delivers executor scripts, split Android workflow jobs, contract
 tests, and documentation. Cosmos Mercury dispatcher, OIDC API, and Release UI integration
 are implemented in phase B after COSMOS-59 handoff.
+
+## Dart executor tools
+
+All former embedded build-tool code now runs from the independent locked
+`tools/cosmos_executor` Dart package. The existing native signing commands and
+canonical Node digest implementation remain unchanged. There is no Python
+entrypoint or fallback. Each workflow installs the pinned standalone Dart SDK and
+resolves the committed tool lock before running a stage. Compile additionally
+resolves Orion's independent `tools/rigel_build` lock and invokes its Dart assembler
+from the exact frozen source commit. Older source commits lacking that entrypoint
+are explicitly rejected; historical artifacts and receipts are not rewritten.
+
+Validate locally with `dart pub get --enforce-lockfile --directory tools/cosmos_executor`,
+then `./scripts/tests/run-contract-tests.sh` and
+`(cd tools/cosmos_executor && dart test)`. Set `COSMOS_ROOT` and `ORION_ROOT` to the
+corresponding migrated checkouts for `./scripts/tests/cross-repo-contract.sh`.
+The latter verifies platform canonical vectors, Mercury theme output, frozen
+resource bytes and Android/iOS/multi-style assembly. Real Apple signing remains a
+separate macOS/material validation requirement, not a Linux test claim.
+
+Sensitive reusable workflows pin the executor-owned scripts independently of the
+caller checkout. When updating them, review the tool commit, update the literal
+checkout SHA, then pin the reusable workflow commit in the caller and Mercury's
+allowed stage revisions. A main merge alone does not update an external private
+caller or a deployed environment override. Never retain an old runtime fallback
+or loosen OIDC/required checks to complete that rollout.

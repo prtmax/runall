@@ -16,6 +16,13 @@ jobs:
     steps:
       - name: Checkout runall
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1
+        with:
+          sdk: '3.13.2'
+      - name: Resolve locked executor tools
+        run: dart pub get --enforce-lockfile --directory tools/cosmos_executor
 
       - name: Syntax check scripts
         shell: bash
@@ -27,7 +34,8 @@ jobs:
           done
           bash -n scripts/tests/run-contract-tests.sh
           node --check scripts/lib/native_digest.js
-          python3 -m py_compile scripts/lib/frozen_resources.py
+          dart analyze tools/cosmos_executor
+          (cd tools/cosmos_executor && dart test)
 
       - name: Run contract tests
         shell: bash
