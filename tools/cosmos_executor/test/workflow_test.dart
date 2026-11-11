@@ -4,6 +4,19 @@ import 'package:test/test.dart';
 
 void main() {
   final root = Directory.current.parent.parent.path;
+  test('workflows never check out the retired executor revision', () {
+    for (final file
+        in Directory('$root/.github/workflows')
+            .listSync()
+            .whereType<File>()
+            .where((file) => file.path.endsWith('.yml'))) {
+      expect(
+        file.readAsStringSync(),
+        isNot(contains('fafbdb68079ccce698e08e04bdc55f3d4e846715')),
+        reason: file.path,
+      );
+    }
+  });
   test(
     'compile remains uncredentialed; prepare/sign/finalize are isolated',
     () {
