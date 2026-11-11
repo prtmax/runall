@@ -149,14 +149,16 @@ if [[ "$put_ok" != 1 ]]; then
 fi
 
 object_key="$(jq -r '.objectKey' "$workdir/grant.json")"
-complete_body="$(jq -n \
+grant_status="$(jq -r '.status // "authorized"' "$workdir/grant.json")"
+complete_body="$(jq -cn \
   --arg target "$TARGET" \
+  --arg status "$grant_status" \
   --arg objectKey "$object_key" \
   --arg fileName "$FILE_NAME" \
   --arg contentType "$CONTENT_TYPE" \
   --argjson byteSize "$size" \
   --arg sha256 "$sha256" \
-  '{target: $target, objectKey: $objectKey, fileName: $fileName, contentType: $contentType, byteSize: $byteSize, sha256: $sha256}')"
+  '{target: $target, status: $status, objectKey: $objectKey, fileName: $fileName, contentType: $contentType, byteSize: $byteSize, sha256: $sha256}')"
 post_json "$complete_url" "$complete_body" "$workdir/complete.json" || {
   log "artifact upload complete failed"
   exit 1

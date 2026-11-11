@@ -296,6 +296,7 @@ MOCK_UPLOAD_LOG="$work/upload.log" MOCK_UPLOAD_REQUEST="$work/upload-request.jso
   "${ROOT_DIR}/scripts/upload-artifacts" --spec "$work/spec.json" --artifact "$work/app.apk" --target apk
 jq -e '.target=="apk" and .fileName=="app.apk" and .byteSize>0 and (.sha256|test("^[0-9a-f]{64}$"))' "$work/upload-request.json" >/dev/null
 grep -q '^put$' "$work/upload.log"
+tail -n 1 "$work/upload.log" | jq -e '.status == "authorized" and .target == "apk" and .objectKey == "native/900/apk"' >/dev/null
 if MOCK_UPLOAD_MODE=bad-url MOCK_UPLOAD_LOG="$work/upload.log" MOCK_UPLOAD_REQUEST="$work/upload-request.json" MOCK_UPLOAD_ARTIFACT="$work/app.apk" \
   PATH="$mock_bin:$PATH" COSMOS_BUILD_ARTIFACT_UPLOAD_URL=https://api.example.test/internal \
   COSMOS_BUILD_CREDENTIAL=finalize-token BUILD_RUN_ID=900 \
