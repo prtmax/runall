@@ -142,7 +142,7 @@ if [[ -n "$EXPECTED_PACKAGE" ]] || [[ -n "$expected_version_name" ]] || [[ -n "$
 fi
 
 if [[ -n "$EXPECTED_FINGERPRINT" ]]; then
-  fp="$(apksigner verify --print-certs "$OUTPUT" | sed -n 's/Signer #1 certificate SHA-256 digest: //p' | head -1 | tr -d '[:space:]')"
+  fp="$(apksigner verify --print-certs "$OUTPUT" | sed -n 's/^.*certificate SHA-256 digest:[[:space:]]*//p' | head -1 | tr -d '[:space:]')"
   want="${EXPECTED_FINGERPRINT#sha256:}"
   want="${want//:/}"
   got="${fp//:/}"
