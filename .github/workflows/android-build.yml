@@ -19,7 +19,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-prepare.yml@6454ad1ff47d966851bd0d5aa823775aed80d9fc
+    uses: prtmax/runall/.github/workflows/reusable-prepare.yml@89fca2aa125ca68c6278940354bac3796e316364
     with:
       build_run_id: ${{ inputs.build_run_id }}
     secrets:
@@ -107,7 +107,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-sign-android.yml@6454ad1ff47d966851bd0d5aa823775aed80d9fc
+    uses: prtmax/runall/.github/workflows/reusable-sign-android.yml@89fca2aa125ca68c6278940354bac3796e316364
     with:
       build_run_id: ${{ inputs.build_run_id }}
       application_id: ${{ needs.prepare.outputs.application_id }}
@@ -126,7 +126,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-finalize-android.yml@6454ad1ff47d966851bd0d5aa823775aed80d9fc
+    uses: prtmax/runall/.github/workflows/reusable-finalize-android.yml@89fca2aa125ca68c6278940354bac3796e316364
     with:
       build_run_id: ${{ inputs.build_run_id }}
       upstream_result: ${{ needs.sign-android.result == 'success' && 'success' || 'failure' }}
@@ -208,7 +208,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-sign-ios.yml@6454ad1ff47d966851bd0d5aa823775aed80d9fc
+    uses: prtmax/runall/.github/workflows/reusable-sign-ios.yml@89fca2aa125ca68c6278940354bac3796e316364
     with:
       build_run_id: ${{ inputs.build_run_id }}
     secrets:
@@ -226,7 +226,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-finalize-ios.yml@6454ad1ff47d966851bd0d5aa823775aed80d9fc
+    uses: prtmax/runall/.github/workflows/reusable-finalize-ios.yml@89fca2aa125ca68c6278940354bac3796e316364
     with:
       build_run_id: ${{ inputs.build_run_id }}
       upstream_result: ${{ needs.sign-ios.result == 'success' && 'success' || 'failure' }}
