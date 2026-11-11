@@ -57,37 +57,37 @@ fi
 
 git -C "$WORKSPACE" remote set-url origin "$origin_url"
 if [[ "$source_ref" == "latest" ]]; then
-  if ! git_with_auth -C "$WORKSPACE" fetch --filter=blob:none --tags --force origin; then
+  if ! git_with_auth -C "$WORKSPACE" fetch --tags --force origin; then
     log "trusted Orion tags fetch failed"
     exit 1
   fi
   resolved_tag="$(git -C "$WORKSPACE" tag --list --sort=-version:refname | head -n 1)"
   if [[ -n "$resolved_tag" ]]; then
-    git -C "$WORKSPACE" checkout --detach "$resolved_tag"
+    git_with_auth -C "$WORKSPACE" checkout --detach "$resolved_tag"
   else
-    if ! git_with_auth -C "$WORKSPACE" fetch --filter=blob:none origin \
+    if ! git_with_auth -C "$WORKSPACE" fetch origin \
       refs/heads/main:refs/remotes/origin/main; then
       log "trusted Orion main fetch failed"
       exit 1
     fi
-    git -C "$WORKSPACE" checkout --detach refs/remotes/origin/main
+    git_with_auth -C "$WORKSPACE" checkout --detach refs/remotes/origin/main
   fi
 elif [[ "$source_ref" == "main" ]]; then
-  if ! git_with_auth -C "$WORKSPACE" fetch --filter=blob:none origin \
+  if ! git_with_auth -C "$WORKSPACE" fetch origin \
     refs/heads/main:refs/remotes/origin/main; then
     log "trusted Orion main fetch failed"
     exit 1
   fi
-  git -C "$WORKSPACE" checkout --detach refs/remotes/origin/main
+  git_with_auth -C "$WORKSPACE" checkout --detach refs/remotes/origin/main
 else
-  if ! git_with_auth -C "$WORKSPACE" fetch --filter=blob:none --tags --force origin "$source_ref"; then
+  if ! git_with_auth -C "$WORKSPACE" fetch --tags --force origin "$source_ref"; then
     log "trusted Orion ref fetch failed: $source_ref"
     exit 1
   fi
   if git -C "$WORKSPACE" rev-parse --verify "${source_ref}^{commit}" >/dev/null 2>&1; then
-    git -C "$WORKSPACE" checkout --detach "$source_ref"
+    git_with_auth -C "$WORKSPACE" checkout --detach "$source_ref"
   else
-    git -C "$WORKSPACE" checkout --detach FETCH_HEAD
+    git_with_auth -C "$WORKSPACE" checkout --detach FETCH_HEAD
   fi
 fi
 
@@ -104,4 +104,16 @@ fi
 
 resolve_release_app_dir "$WORKSPACE" "$source_ref" "$source_ref" >/dev/null
 verify_lock_digest_if_present "$SPEC" "$WORKSPACE"
+if [[ -n "${COSMOS_BUILD_REPOSITORY_TOKEN:-}" && -f "${WORKSPACE}/pubspec.yaml" ]]; then
+  mkdir -p "${WORKSPACE}/.git/runall-mirrors"
+  while IFS= read -r dep_url; do
+    [[ -n "$dep_url" ]] || continue
+    mirror_dir="${WORKSPACE}/.git/runall-mirrors/$(basename "$dep_url")"
+    rm -rf "$mirror_dir"
+    if ! git_with_auth clone --bare "$dep_url" "$mirror_dir"; then
+      log "failed to mirror private git dependency: $dep_url"
+      exit 1
+    fi
+  done < <(grep -Eo 'https://github\.com/prtmax/[A-Za-z0-9_.-]+\.git' "${WORKSPACE}/pubspec.yaml" | sort -u || true)
+fi
 log "source checkout ready at $actual_source (ref $source_ref)"

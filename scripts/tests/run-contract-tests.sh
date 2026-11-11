@@ -99,6 +99,7 @@ cat > "$work/git-bin/git" <<'MOCKGIT'
 printf '%s\n' "$*" >> "${MOCK_GIT_LOG:?}"
 if [[ "$1" == "-c" ]]; then shift 2; fi
 if [[ "$1" == "init" ]]; then mkdir -p "$2/.git"; exit 0; fi
+if [[ "$1" == "clone" && "$2" == "--bare" ]]; then mkdir -p "$4"; exit 0; fi
 if [[ "$1" == "-C" ]]; then
   root="$2"; shift 2
   case "$1 $2" in
@@ -113,6 +114,7 @@ if [[ "$1" == "-C" ]]; then
       mkdir -p "$root/tools/rigel_build/bin" "$root/apps/rigel"
       printf 'assembler\n' > "$root/tools/rigel_build/bin/assemble.dart"
       cp "${MOCK_LOCK:?}" "$root/pubspec.lock"
+      printf 'url: https://github.com/prtmax/psdk.git\n' > "$root/pubspec.yaml"
       exit 0
       ;;
     "rev-parse HEAD") printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'; exit 0 ;;
@@ -130,8 +132,10 @@ bind_spec_digests "$work/ref-latest-raw.json" "$work/ref-latest-spec.json"
 MOCK_LATEST_TAG="v1.4.2" MOCK_LOCK="$work/mock-lock" MOCK_GIT_LOG="$work/git.log" PATH="$work/git-bin:$PATH" \
   COSMOS_BUILD_REPOSITORY_TOKEN=secret-token "${ROOT_DIR}/scripts/checkout-source" \
   --spec "$work/ref-latest-spec.json" --workspace "$work/latest-tag-source"
-grep -q 'fetch --filter=blob:none --tags --force origin' "$work/git.log"
+grep -q 'fetch --tags --force origin' "$work/git.log"
 grep -q 'checkout --detach v1.4.2' "$work/git.log"
+grep -q "clone --bare https://github.com/prtmax/psdk.git $work/latest-tag-source/.git/runall-mirrors/psdk.git" "$work/git.log"
+[[ -d "$work/latest-tag-source/.git/runall-mirrors/psdk.git" ]]
 if grep -q 'secret-token@' "$work/git.log"; then
   log "repository token was embedded in the remote URL"
   exit 1
@@ -158,7 +162,7 @@ bind_spec_digests "$work/ref-tag-raw.json" "$work/ref-tag-spec.json"
 : > "$work/git.log"
 MOCK_LOCK="$work/mock-lock" MOCK_GIT_LOG="$work/git.log" PATH="$work/git-bin:$PATH" \
   "${ROOT_DIR}/scripts/checkout-source" --spec "$work/ref-tag-spec.json" --workspace "$work/tag-source"
-grep -q 'fetch --filter=blob:none --tags --force origin v1.0.0' "$work/git.log"
+grep -q 'fetch --tags --force origin v1.0.0' "$work/git.log"
 grep -q 'checkout --detach v1.0.0' "$work/git.log"
 
 # 3b. explicit source.ref with embedded provenance commit and a different valid nonzero lockDigest succeeds
@@ -335,5 +339,11 @@ if rg -n 'cosmos\.release-build\.v1|generate_release_build|bundled\.json' \
   log "legacy Release Build protocol remains in active executor paths"
   exit 1
 fi
+
+
+mkdir -p "$work/android-sdk/build-tools/34.0.0" "$work/android-sdk/build-tools/35.0.1"
+: > "$work/github_path"
+ANDROID_HOME="$work/android-sdk" GITHUB_PATH="$work/github_path" ensure_android_build_tools_path
+grep -qxF "$work/android-sdk/build-tools/35.0.1" "$work/github_path"
 
 log "native executor contract tests passed"
