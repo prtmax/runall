@@ -63,11 +63,11 @@ install_fvm() {
   local installer
   installer="$(mktemp)"
   if [[ -n "${RUNALL_FVM_INSTALL_SCRIPT:-}" ]]; then
-    bash "${RUNALL_FVM_INSTALL_SCRIPT}"
+    bash "${RUNALL_FVM_INSTALL_SCRIPT}" >&2
   else
     require_cmd curl
     curl -fsSL https://fvm.app/install.sh -o "$installer"
-    bash "$installer"
+    bash "$installer" >&2
   fi
   rm -f "$installer"
   export PATH="${PATH}:${HOME}/.pub-cache/bin:${HOME}/fvm/bin:${HOME}/.local/bin"
@@ -87,9 +87,10 @@ resolve_pinned_binaries() {
     printf '%s\n%s\n' "$RUNALL_FLUTTER" "$RUNALL_DART"
     return 0
   fi
-  install_fvm
-  fvm install "$version"
-  for root in "${FVM_CACHE_PATH:-}" "${HOME}/.fvm/versions" "${HOME}/fvm/versions"; do
+  export FVM_CACHE_PATH="${FVM_CACHE_PATH:-${HOME}/fvm/versions}"
+  install_fvm >&2
+  fvm install "$version" >&2
+  for root in "${FVM_CACHE_PATH:-}" "${HOME}/fvm/versions" "${HOME}/.fvm/versions" "${XDG_CACHE_HOME:-${HOME}/.cache}/fvm/versions"; do
     [[ -n "$root" ]] || continue
     candidate="${root%/}/${version}/bin/flutter"
     if [[ -x "$candidate" && -x "${root%/}/${version}/bin/dart" ]]; then
@@ -101,7 +102,8 @@ resolve_pinned_binaries() {
   exit 1
 }
 
-mapfile -t bins < <(resolve_pinned_binaries "$pinned")
+bins_out="$(resolve_pinned_binaries "$pinned")"
+mapfile -t bins <<< "$bins_out"
 flutter_bin="${bins[0]}"
 dart_bin="${bins[1]}"
 if ! "$flutter_bin" --version | grep -F "$pinned" >/dev/null; then

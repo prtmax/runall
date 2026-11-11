@@ -197,6 +197,29 @@ bind_spec_digests "$work/flutter-raw.json" "$work/flutter-spec.json"
 RUNALL_FLUTTER="$work/flutter-bin/flutter" RUNALL_DART="$work/flutter-bin/dart" \
   "${ROOT_DIR}/scripts/ensure-flutter" --spec "$work/flutter-spec.json" --workspace "$work/flutter-ws" --env-file "$work/flutter.env"
 
+mkdir -p "$work/fvm-home" "$work/no-fvm-bin"
+ln -sf "$(command -v jq)" "$work/no-fvm-bin/jq"
+ln -sf "$(command -v node)" "$work/no-fvm-bin/node"
+cat > "$work/fvm-install.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '\nInstalling FVM...\nDone!\n\n'
+mkdir -p "${HOME}/.local/bin"
+cat > "${HOME}/.local/bin/fvm" <<'MOCKFVM'
+#!/usr/bin/env bash
+printf '\nDownloading Flutter SDK 3.41.2...\n\nExtracting...\n'
+mkdir -p "${FVM_CACHE_PATH}/3.41.2/bin"
+cp "${MOCK_FLUTTER_SRC_DIR}/flutter" "${FVM_CACHE_PATH}/3.41.2/bin/flutter"
+cp "${MOCK_FLUTTER_SRC_DIR}/dart" "${FVM_CACHE_PATH}/3.41.2/bin/dart"
+chmod +x "${FVM_CACHE_PATH}/3.41.2/bin/flutter" "${FVM_CACHE_PATH}/3.41.2/bin/dart"
+MOCKFVM
+chmod +x "${HOME}/.local/bin/fvm"
+EOF
+chmod +x "$work/fvm-install.sh"
+MOCK_FLUTTER_SRC_DIR="$work/flutter-bin" HOME="$work/fvm-home" PATH="$work/no-fvm-bin:/usr/bin:/bin" RUNALL_FVM_INSTALL_SCRIPT="$work/fvm-install.sh" \
+  "${ROOT_DIR}/scripts/ensure-flutter" --spec "$work/flutter-spec.json" --workspace "$work/flutter-ws" --env-file "$work/fvm-noisy.env"
+grep -q "fvm/versions/3.41.2/bin/flutter" "$work/fvm-noisy.env"
+grep -q "fvm/versions/3.41.2/bin/dart" "$work/fvm-noisy.env"
+
 log "contract: OIDC exchange sends run-bound token and persists only stage credential"
 mock_bin="$work/mock-bin"
 mkdir -p "$mock_bin"
