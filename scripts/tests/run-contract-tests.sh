@@ -261,6 +261,10 @@ if [[ "$joined" == *"/events"* ]]; then
   printf '%s\n' "$data" > "${MOCK_EVENT_PAYLOAD:?}"
   exit 0
 fi
+if [[ "$joined" == *"/sign-results"* ]]; then
+  printf '{}\n'
+  exit 0
+fi
 if [[ "$joined" == *" -X PUT "* || "$joined" == *" -X PUT" ]]; then
   [[ "${MOCK_UPLOAD_MODE:-ok}" == "put-fail" ]] && exit 1
   printf 'put\n' >> "${MOCK_UPLOAD_LOG:?}"
@@ -349,6 +353,56 @@ fi
 for script in sign-android sign-aab sign-ios; do
   grep -q '\.buildInput\.app' "${ROOT_DIR}/scripts/$script"
   grep -q 'report_sign_result' "${ROOT_DIR}/scripts/$script"
+done
+
+mkdir -p "$work/sign-bin"
+cat > "$work/sign-bin/zipalign" <<'MOCK'
+#!/usr/bin/env bash
+cp "${@: -2:1}" "${@: -1}"
+MOCK
+cat > "$work/sign-bin/aapt" <<'MOCK'
+#!/usr/bin/env bash
+printf "package: name='com.example.native' versionCode='1' versionName='1.0.0'\n"
+MOCK
+cat > "$work/sign-bin/apksigner" <<'MOCK'
+#!/usr/bin/env bash
+if [[ "$1" == "sign" ]]; then
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--out" ]]; then
+      printf "signed-apk" > "$2"
+      exit 0
+    fi
+    shift
+  done
+  exit 1
+fi
+if [[ "$1" == "verify" && "$2" == "--print-certs" ]]; then
+  printf "%s\n" "${MOCK_APKSIGNER_CERT_LINE}"
+  exit 0
+fi
+exit 0
+MOCK
+chmod +x "$work/sign-bin/zipalign" "$work/sign-bin/aapt" "$work/sign-bin/apksigner"
+printf "unsigned-apk" > "$work/unsigned.apk"
+printf "dummy-ks" > "$work/dummy.jks"
+cert_hex="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+for cert_line in \
+  "Signer #1 certificate SHA-256 digest: ${cert_hex}" \
+  "V3.0 Signer: certificate SHA-256 digest: ${cert_hex}"; do
+  MOCK_APKSIGNER_CERT_LINE="$cert_line" \
+    MOCK_EVENT_PAYLOAD="$work/sign-event.json" \
+    PATH="$work/sign-bin:$mock_bin:$PATH" \
+    COSMOS_BUILD_CALLBACK_URL=https://api.example.test/internal \
+    COSMOS_BUILD_CREDENTIAL=sign-token \
+    BUILD_RUN_ID=900 \
+    ANDROID_KEYSTORE_PATH="$work/dummy.jks" \
+    ANDROID_KEYSTORE_PASSWORD="pass" \
+    ANDROID_KEY_ALIAS="upload" \
+    "${ROOT_DIR}/scripts/sign-android" \
+      --spec "$work/spec.json" \
+      --input "$work/unsigned.apk" \
+      --output "$work/signed.apk" \
+      --expected-fingerprint "$cert_hex"
 done
 
 log "contract: compile stages remain uncredentialed and signing/finalize stay isolated"
