@@ -5,10 +5,10 @@ import 'package:yaml/yaml.dart';
 
 void main() {
   test(
-    'every runtime job checks out the same immutable executor-owned tools',
+    'every runtime job checks out executor tools at the active run revision',
     () {
       final root = Directory.current.parent.parent.path;
-      final revisions = <String>{};
+      var checkouts = 0;
       for (final file in Directory(
         '$root/.github/workflows',
       ).listSync().whereType<File>()) {
@@ -27,11 +27,11 @@ void main() {
           final settings = checkout['with'] as YamlMap;
           expect(settings['repository'], 'prtmax/runall');
           expect(settings['persist-credentials'], false);
-          expect(settings['ref'], matches(r'^[0-9a-f]{40}$'));
-          revisions.add(settings['ref'] as String);
+          expect(settings.containsKey('ref'), false, reason: file.path);
+          checkouts++;
         }
       }
-      expect(revisions, hasLength(1));
+      expect(checkouts, 7);
     },
   );
 }
