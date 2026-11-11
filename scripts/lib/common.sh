@@ -68,7 +68,11 @@ read_orion_commit() {
 }
 
 verify_lock_digest_if_present() {
-  local spec_file="$1" workspace="$2" expected_lock actual_lock
+  local spec_file="$1" workspace="$2" explicit_ref expected_lock actual_lock
+  explicit_ref="$(json_get "$spec_file" '.buildInput.source.ref // empty')"
+  if [[ -n "${explicit_ref// }" ]]; then
+    return 0
+  fi
   expected_lock="$(json_get "$spec_file" '.buildInput.source.lockDigest // empty')"
   if [[ -z "${expected_lock// }" || "$expected_lock" =~ ^0+$ ]]; then
     return 0

@@ -161,6 +161,21 @@ MOCK_LOCK="$work/mock-lock" MOCK_GIT_LOG="$work/git.log" PATH="$work/git-bin:$PA
 grep -q 'fetch --filter=blob:none --tags --force origin v1.0.0' "$work/git.log"
 grep -q 'checkout --detach v1.0.0' "$work/git.log"
 
+# 3b. explicit source.ref with embedded provenance commit and a different valid nonzero lockDigest succeeds
+jq '.buildInput.source.ref="v1.0.0" | .buildInput.source.commit="1111111111111111111111111111111111111111" | .buildInput.source.lockDigest="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"' "$work/spec.json" > "$work/ref-provenance-raw.json"
+bind_spec_digests "$work/ref-provenance-raw.json" "$work/ref-provenance-spec.json"
+: > "$work/git.log"
+MOCK_LOCK="$work/mock-lock" MOCK_GIT_LOG="$work/git.log" PATH="$work/git-bin:$PATH" \
+  "${ROOT_DIR}/scripts/checkout-source" --spec "$work/ref-provenance-spec.json" --workspace "$work/ref-provenance-source"
+grep -q 'checkout --detach v1.0.0' "$work/git.log"
+
+# 3c. legacy commit-only spec still enforces nonzero lockDigest
+if MOCK_LOCK="$work/mock-lock" MOCK_GIT_LOG="$work/git.log" PATH="$work/git-bin:$PATH" \
+  "${ROOT_DIR}/scripts/checkout-source" --spec "$work/spec.json" --workspace "$work/legacy-bad-lock" >/dev/null 2>&1; then
+  log "legacy commit-only spec with mismatched lockDigest was accepted"
+  exit 1
+fi
+
 # 4. ensure-flutter prefers workspace .fvmrc over empty or mismatched buildInput.source.flutterVersion
 mkdir -p "$work/flutter-ws" "$work/flutter-bin"
 printf '{"flutter":"3.41.2"}\n' > "$work/flutter-ws/.fvmrc"

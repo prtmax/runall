@@ -19,7 +19,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-prepare.yml@89fca2aa125ca68c6278940354bac3796e316364
+    uses: prtmax/runall/.github/workflows/reusable-prepare.yml@ce5a0923b75148a98637ab26e2cea6ef139d0bd2
     with:
       build_run_id: ${{ inputs.build_run_id }}
     secrets:
@@ -40,7 +40,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: prtmax/runall
-          ref: be233a6f0d1010de1ae9bd418a4e9158b025a047
+          ref: fafbdb68079ccce698e08e04bdc55f3d4e846715
           persist-credentials: false
       - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1
         with:
@@ -107,7 +107,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-sign-android.yml@89fca2aa125ca68c6278940354bac3796e316364
+    uses: prtmax/runall/.github/workflows/reusable-sign-android.yml@ce5a0923b75148a98637ab26e2cea6ef139d0bd2
     with:
       build_run_id: ${{ inputs.build_run_id }}
       application_id: ${{ needs.prepare.outputs.application_id }}
@@ -126,7 +126,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-finalize-android.yml@89fca2aa125ca68c6278940354bac3796e316364
+    uses: prtmax/runall/.github/workflows/reusable-finalize-android.yml@ce5a0923b75148a98637ab26e2cea6ef139d0bd2
     with:
       build_run_id: ${{ inputs.build_run_id }}
       upstream_result: ${{ needs.sign-android.result == 'success' && 'success' || 'failure' }}
@@ -147,7 +147,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: prtmax/runall
-          ref: be233a6f0d1010de1ae9bd418a4e9158b025a047
+          ref: fafbdb68079ccce698e08e04bdc55f3d4e846715
           persist-credentials: false
       - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1
         with:
@@ -208,7 +208,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-sign-ios.yml@89fca2aa125ca68c6278940354bac3796e316364
+    uses: prtmax/runall/.github/workflows/reusable-sign-ios.yml@ce5a0923b75148a98637ab26e2cea6ef139d0bd2
     with:
       build_run_id: ${{ inputs.build_run_id }}
     secrets:
@@ -226,7 +226,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-finalize-ios.yml@89fca2aa125ca68c6278940354bac3796e316364
+    uses: prtmax/runall/.github/workflows/reusable-finalize-ios.yml@ce5a0923b75148a98637ab26e2cea6ef139d0bd2
     with:
       build_run_id: ${{ inputs.build_run_id }}
       upstream_result: ${{ needs.sign-ios.result == 'success' && 'success' || 'failure' }}
