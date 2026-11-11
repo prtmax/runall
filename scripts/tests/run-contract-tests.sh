@@ -207,10 +207,11 @@ mkdir -p "${HOME}/.local/bin"
 cat > "${HOME}/.local/bin/fvm" <<'MOCKFVM'
 #!/usr/bin/env bash
 printf '\nDownloading Flutter SDK 3.41.2...\n\nExtracting...\n'
-mkdir -p "${FVM_CACHE_PATH}/3.41.2/bin"
-cp "${MOCK_FLUTTER_SRC_DIR}/flutter" "${FVM_CACHE_PATH}/3.41.2/bin/flutter"
-cp "${MOCK_FLUTTER_SRC_DIR}/dart" "${FVM_CACHE_PATH}/3.41.2/bin/dart"
-chmod +x "${FVM_CACHE_PATH}/3.41.2/bin/flutter" "${FVM_CACHE_PATH}/3.41.2/bin/dart"
+target_dir="${FVM_CACHE_PATH:-${HOME}/fvm}/versions/3.41.2/bin"
+mkdir -p "${target_dir}"
+cp "${MOCK_FLUTTER_SRC_DIR}/flutter" "${target_dir}/flutter"
+cp "${MOCK_FLUTTER_SRC_DIR}/dart" "${target_dir}/dart"
+chmod +x "${target_dir}/flutter" "${target_dir}/dart"
 MOCKFVM
 chmod +x "${HOME}/.local/bin/fvm"
 EOF

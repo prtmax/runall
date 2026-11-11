@@ -87,10 +87,9 @@ resolve_pinned_binaries() {
     printf '%s\n%s\n' "$RUNALL_FLUTTER" "$RUNALL_DART"
     return 0
   fi
-  export FVM_CACHE_PATH="${FVM_CACHE_PATH:-${HOME}/fvm/versions}"
   install_fvm >&2
   fvm install "$version" >&2
-  for root in "${FVM_CACHE_PATH:-}" "${HOME}/fvm/versions" "${HOME}/.fvm/versions" "${XDG_CACHE_HOME:-${HOME}/.cache}/fvm/versions"; do
+  for root in "${FVM_CACHE_PATH:-}" "${FVM_CACHE_PATH:+${FVM_CACHE_PATH%/}/versions}" "${HOME}/fvm/versions" "${HOME}/.fvm/versions" "${XDG_CACHE_HOME:-${HOME}/.cache}/fvm/versions"; do
     [[ -n "$root" ]] || continue
     candidate="${root%/}/${version}/bin/flutter"
     if [[ -x "$candidate" && -x "${root%/}/${version}/bin/dart" ]]; then
