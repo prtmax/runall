@@ -34,6 +34,7 @@ void main() {
         'exchange-build-credential',
         'fetch-packaging-resources',
         'checkout-source',
+        '.buildInput.source.ref',
       ]) {
         expect(prepare, contains(required));
       }

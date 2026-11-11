@@ -35,7 +35,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: prtmax/runall
-          ref: 309fb52a619992e6f4740badc3acec0efcbb70b1
+          ref: be233a6f0d1010de1ae9bd418a4e9158b025a047
           persist-credentials: false
       - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1
         with:
