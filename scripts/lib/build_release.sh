@@ -23,6 +23,15 @@ prepare_frozen_workspace() {
   fi
   APP_DIR="$(resolve_release_app_dir "$WORKSPACE" "$source_commit" "$orion_commit")"
   verify_lock_digest_if_present "$SPEC" "$WORKSPACE"
+  if [[ -d "${WORKSPACE}/.git/runall-mirrors" ]]; then
+    local mirror_dir dep_name
+    for mirror_dir in "${WORKSPACE}/.git/runall-mirrors"/*.git; do
+      [[ -d "$mirror_dir" ]] || continue
+      dep_name="$(basename "${mirror_dir}")"
+      git config --global "url.file://${mirror_dir}.insteadOf" "https://github.com/prtmax/${dep_name}"
+      git config --global --add "url.file://${mirror_dir}.insteadOf" "https://github.com/prtmax/${dep_name%.git}"
+    done
+  fi
   local env_file
   env_file="$(mktemp)"
   "${RUNALL_ROOT}/scripts/ensure-flutter" --spec "$SPEC" --workspace "$WORKSPACE" --env-file "$env_file"

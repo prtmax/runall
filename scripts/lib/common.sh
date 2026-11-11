@@ -285,3 +285,23 @@ run_dart_tool() {
   require_cmd dart
   dart run "${executor_root}/tools/cosmos_executor/bin/executor.dart" "$@"
 }
+
+ensure_android_build_tools_path() {
+  local sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+  if [[ -d "${sdk_root}/build-tools" ]]; then
+    local latest_bt
+    latest_bt="$(find "${sdk_root}/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+    if [[ -n "${latest_bt}" ]]; then
+      case ":${PATH}:" in
+        *":${latest_bt}:"*) ;;
+        *) export PATH="${latest_bt}:${PATH}" ;;
+      esac
+      if [[ -n "${GITHUB_PATH:-}" && -w "${GITHUB_PATH}" ]]; then
+        if ! grep -qxF "${latest_bt}" "${GITHUB_PATH}" 2>/dev/null; then
+          printf '%s\n' "${latest_bt}" >>"${GITHUB_PATH}"
+        fi
+      fi
+    fi
+  fi
+}
+ensure_android_build_tools_path
