@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Clone and pin source repository + optional Orion submodule at frozen SHAs.
+# Clone and pin source repository at a requested Git ref (tag, branch, commit, or "latest").
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -32,8 +32,7 @@ assert_non_empty "--workspace" "$WORKSPACE"
 validate_build_spec_document "$SPEC"
 
 repository="$(json_get "$SPEC" '.buildInput.source.repository')"
-source_commit="$(json_get "$SPEC" '.buildInput.source.commit')"
-orion_sha="$(read_orion_commit "$SPEC")"
+source_ref="$(read_source_ref "$SPEC")"
 
 mkdir -p "$WORKSPACE"
 
@@ -57,19 +56,43 @@ if [[ ! -d "${WORKSPACE}/.git" ]]; then
 fi
 
 git -C "$WORKSPACE" remote set-url origin "$origin_url"
-if ! git_with_auth -C "$WORKSPACE" fetch --filter=blob:none origin \
-  refs/heads/main:refs/remotes/origin/main; then
-  log "trusted Orion main fetch failed"
-  exit 1
+if [[ "$source_ref" == "latest" ]]; then
+  if ! git_with_auth -C "$WORKSPACE" fetch --filter=blob:none --tags --force origin; then
+    log "trusted Orion tags fetch failed"
+    exit 1
+  fi
+  resolved_tag="$(git -C "$WORKSPACE" tag --list --sort=-version:refname | head -n 1)"
+  if [[ -n "$resolved_tag" ]]; then
+    git -C "$WORKSPACE" checkout --detach "$resolved_tag"
+  else
+    if ! git_with_auth -C "$WORKSPACE" fetch --filter=blob:none origin \
+      refs/heads/main:refs/remotes/origin/main; then
+      log "trusted Orion main fetch failed"
+      exit 1
+    fi
+    git -C "$WORKSPACE" checkout --detach refs/remotes/origin/main
+  fi
+elif [[ "$source_ref" == "main" ]]; then
+  if ! git_with_auth -C "$WORKSPACE" fetch --filter=blob:none origin \
+    refs/heads/main:refs/remotes/origin/main; then
+    log "trusted Orion main fetch failed"
+    exit 1
+  fi
+  git -C "$WORKSPACE" checkout --detach refs/remotes/origin/main
+else
+  if ! git_with_auth -C "$WORKSPACE" fetch --filter=blob:none --tags --force origin "$source_ref"; then
+    log "trusted Orion ref fetch failed: $source_ref"
+    exit 1
+  fi
+  if git -C "$WORKSPACE" rev-parse --verify "${source_ref}^{commit}" >/dev/null 2>&1; then
+    git -C "$WORKSPACE" checkout --detach "$source_ref"
+  else
+    git -C "$WORKSPACE" checkout --detach FETCH_HEAD
+  fi
 fi
-if ! git -C "$WORKSPACE" cat-file -e "${source_commit}^{commit}" 2>/dev/null ||
-  ! git -C "$WORKSPACE" merge-base --is-ancestor "$source_commit" refs/remotes/origin/main; then
-  log "source commit is not in trusted Orion main history"
-  exit 1
-fi
-git -C "$WORKSPACE" checkout --detach "$source_commit"
+
 actual_source="$(git -C "$WORKSPACE" rev-parse HEAD)"
-if [[ "$actual_source" != "$source_commit" ]]; then
+if [[ "$source_ref" =~ ^[0-9a-f]{40}$ && "$actual_source" != "$source_ref" ]]; then
   log "source HEAD mismatch"
   exit 1
 fi
@@ -79,11 +102,6 @@ if [[ "$origin_actual" != "$origin_url" ]]; then
   exit 1
 fi
 
-resolve_release_app_dir "$WORKSPACE" "$source_commit" "$orion_sha" >/dev/null
-actual_lock="$(sha256_file "${WORKSPACE}/pubspec.lock")"
-expected_lock="$(json_get "$SPEC" '.buildInput.source.lockDigest')"
-if [[ "$actual_lock" != "$expected_lock" ]]; then
-  log "Orion pubspec.lock digest mismatch"
-  exit 1
-fi
-log "source checkout ready at $source_commit orion $orion_sha"
+resolve_release_app_dir "$WORKSPACE" "$source_ref" "$source_ref" >/dev/null
+verify_lock_digest_if_present "$SPEC" "$WORKSPACE"
+log "source checkout ready at $actual_source (ref $source_ref)"

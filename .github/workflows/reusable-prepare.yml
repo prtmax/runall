@@ -61,7 +61,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: prtmax/runall
-          ref: 309fb52a619992e6f4740badc3acec0efcbb70b1
+          ref: be233a6f0d1010de1ae9bd418a4e9158b025a047
           persist-credentials: false
       - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1
         with:
@@ -86,8 +86,9 @@ jobs:
           echo "platform=$(jq -r .platform build-spec.json)" >> "$GITHUB_OUTPUT"
           echo "targets=$(jq -c .targets build-spec.json)" >> "$GITHUB_OUTPUT"
           echo "repository=$(jq -r .buildInput.source.repository build-spec.json)" >> "$GITHUB_OUTPUT"
-          echo "source_commit=$(jq -r .buildInput.source.commit build-spec.json)" >> "$GITHUB_OUTPUT"
-          echo "orion_commit=$(jq -r .buildInput.source.commit build-spec.json)" >> "$GITHUB_OUTPUT"
+          source_ref="$(jq -r '(.buildInput.source.ref // .buildInput.source.commit // "latest") | if . == "" then (.buildInput.source.commit // "latest") else . end | if . == "" then "latest" else . end' build-spec.json)"
+          echo "source_commit=${source_ref}" >> "$GITHUB_OUTPUT"
+          echo "orion_commit=${source_ref}" >> "$GITHUB_OUTPUT"
           echo "application_id=$(jq -r '.buildInput.app.applicationId // empty' build-spec.json)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout frozen source tree

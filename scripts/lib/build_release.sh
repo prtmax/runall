@@ -15,20 +15,14 @@ prepare_frozen_workspace() {
   SPEC="$(absolute_path "$spec")"
   WORKSPACE="$(cd "$workspace" && pwd)"
   validate_build_spec_document "$SPEC"
-  source_commit="$(json_get "$SPEC" '.buildInput.source.commit')"
+  source_commit="$(read_source_ref "$SPEC")"
   orion_commit="$(read_orion_commit "$SPEC")"
   if [[ ! -d "${WORKSPACE}/.git" ]]; then
     log "workspace is not a git checkout; run checkout-source in prepare"
     exit 1
   fi
   APP_DIR="$(resolve_release_app_dir "$WORKSPACE" "$source_commit" "$orion_commit")"
-  local expected_lock actual_lock
-  expected_lock="$(json_get "$SPEC" '.buildInput.source.lockDigest')"
-  actual_lock="$(sha256_file "${WORKSPACE}/pubspec.lock")"
-  [[ "$expected_lock" == "$actual_lock" ]] || {
-    log "Orion pubspec.lock digest mismatch"
-    exit 1
-  }
+  verify_lock_digest_if_present "$SPEC" "$WORKSPACE"
   local env_file
   env_file="$(mktemp)"
   "${RUNALL_ROOT}/scripts/ensure-flutter" --spec "$SPEC" --workspace "$WORKSPACE" --env-file "$env_file"

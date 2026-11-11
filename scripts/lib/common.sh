@@ -40,27 +40,56 @@ source_origin_url() {
   printf 'https://github.com/%s.git' "$slug"
 }
 
-read_orion_commit() {
-  local file="$1" commit
+read_source_ref() {
+  local file="$1" ref
   require_cmd jq
-  commit="$(jq -r '.buildInput.source.commit // empty' "$file")"
-  if [[ ! "$commit" =~ ^[0-9a-f]{40}$ || "$commit" =~ ^0+$ ]]; then
-    log "buildInput.source.commit must be an exact Git commit"
+  ref="$(jq -r '
+    (.buildInput.source.ref // "") as $ref |
+    if ($ref | type) == "string" and ($ref | gsub("^\\s+|\\s+$"; "") | length) > 0 then
+      ($ref | gsub("^\\s+|\\s+$"; ""))
+    else
+      (.buildInput.source.commit // "") as $commit |
+      if ($commit | type) == "string" and ($commit | gsub("^\\s+|\\s+$"; "") | length) > 0 and ($commit | test("^0+$") | not) then
+        ($commit | gsub("^\\s+|\\s+$"; ""))
+      else
+        "latest"
+      end
+    end
+  ' "$file")"
+  if [[ -z "${ref// }" || "$ref" == -* || "$ref" =~ [[:space:]] ]]; then
+    log "buildInput.source.ref must be a valid Git reference"
     exit 1
   fi
-  printf '%s' "$commit"
+  printf '%s' "$ref"
+}
+
+read_orion_commit() {
+  read_source_ref "$1"
+}
+
+verify_lock_digest_if_present() {
+  local spec_file="$1" workspace="$2" expected_lock actual_lock
+  expected_lock="$(json_get "$spec_file" '.buildInput.source.lockDigest // empty')"
+  if [[ -z "${expected_lock// }" || "$expected_lock" =~ ^0+$ ]]; then
+    return 0
+  fi
+  actual_lock="$(sha256_file "${workspace}/pubspec.lock")"
+  if [[ "$actual_lock" != "$expected_lock" ]]; then
+    log "Orion pubspec.lock digest mismatch"
+    exit 1
+  fi
 }
 
 # Print the Flutter app directory for a checked-out source tree.
 resolve_release_app_dir() {
-  local workspace="$1" source_commit="$2" orion_commit="$3" head
+  local workspace="$1" source_commit="${2:-}" orion_commit="${3:-}" head
   head="$(git -C "$workspace" rev-parse HEAD)"
-  if [[ "$head" != "$source_commit" ]]; then
+  if [[ "$source_commit" =~ ^[0-9a-f]{40}$ && ! "$source_commit" =~ ^0+$ && "$head" != "$source_commit" ]]; then
     log "workspace source commit mismatch"
     exit 1
   fi
   if [[ -f "$workspace/tools/rigel_build/bin/assemble.dart" ]]; then
-    if [[ "$source_commit" != "$orion_commit" ]]; then
+    if [[ "$source_commit" =~ ^[0-9a-f]{40}$ && "$orion_commit" =~ ^[0-9a-f]{40}$ && "$source_commit" != "$orion_commit" ]]; then
       log "direct Orion checkout must match buildInput.source.commit"
       exit 1
     fi
@@ -127,12 +156,13 @@ validate_build_spec_document() {
         any($style.themes[]; .themeRef == $style.defaultThemeRef))
     end
   ' "$spec_file" >/dev/null
-  jq -e '.buildInput.source.flutterVersion | type == "string" and length > 0' "$spec_file" >/dev/null
+  jq -e '(.buildInput.source.flutterVersion // "") | type == "string"' "$spec_file" >/dev/null
   source_origin_url "$(json_get "$spec_file" '.buildInput.source.repository')" >/dev/null
-  jq -r '.buildInput.source.commit' "$spec_file" | grep -Eq '^[0-9a-f]{40}$'
-  jq -r '.buildInput.source.lockDigest' "$spec_file" | grep -Eq '^[0-9a-f]{64}$'
-  jq -e '.tenantId == .buildInput.tenantId and .appId == .buildInput.appId and .catalogId == .buildInput.source.catalogId' "$spec_file" >/dev/null
-  read_orion_commit "$spec_file" >/dev/null
+  jq -e '(.buildInput.source.ref // "") | type == "string"' "$spec_file" >/dev/null
+  jq -e '(.buildInput.source.commit // "") | type == "string"' "$spec_file" >/dev/null
+  jq -e '(.buildInput.source.lockDigest // "") | type == "string" and (length == 0 or test("^[0-9a-f]{64}$"))' "$spec_file" >/dev/null
+  jq -e '.tenantId == .buildInput.tenantId and .appId == .buildInput.appId and ((.catalogId // "") == (.buildInput.source.catalogId // ""))' "$spec_file" >/dev/null
+  read_source_ref "$spec_file" >/dev/null
   jq -r '.platform' "$spec_file" | grep -Eq '^(android|ios)$'
 
   local platform

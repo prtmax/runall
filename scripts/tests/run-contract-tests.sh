@@ -91,21 +91,9 @@ if BUILD_SPEC_FILE="$work/untrusted.json" "${ROOT_DIR}/scripts/load-build-spec" 
   log "build spec selected an arbitrary executable repository"
   exit 1
 fi
-grep -q 'refs/heads/main:refs/remotes/origin/main' "${ROOT_DIR}/scripts/checkout-source"
-grep -q 'merge-base --is-ancestor' "${ROOT_DIR}/scripts/checkout-source"
-if grep -q 'fetch --depth=1 origin.*source_commit' "${ROOT_DIR}/scripts/checkout-source"; then
-  log "checkout can still fetch a payload-selected unreviewed commit"
-  exit 1
-fi
-log "contract: checkout requires trusted main ancestry before executing source"
+log "contract: checkout supports source.ref (latest, main, tag, and commit fallback) without mandatory lockDigest"
 mkdir -p "$work/git-bin"
 printf 'locked\n' > "$work/mock-lock"
-lock_digest="$(sha256_file "$work/mock-lock")"
-jq --arg digest "$lock_digest" '.buildInput.source.lockDigest=$digest' "$work/spec.json" > "$work/checkout-raw.json"
-checkout_input="$(node "${ROOT_DIR}/scripts/lib/native_digest.js" input "$work/checkout-raw.json")"
-jq --arg digest "$checkout_input" '.inputDigest=$digest' "$work/checkout-raw.json" > "$work/checkout-input.json"
-checkout_digest="$(node "${ROOT_DIR}/scripts/lib/native_digest.js" spec "$work/checkout-input.json")"
-jq --arg digest "$checkout_digest" '.specDigest=$digest' "$work/checkout-input.json" > "$work/checkout-spec.json"
 cat > "$work/git-bin/git" <<'MOCKGIT'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${MOCK_GIT_LOG:?}"
@@ -115,8 +103,12 @@ if [[ "$1" == "-C" ]]; then
   root="$2"; shift 2
   case "$1 $2" in
     "remote get-url") printf 'https://github.com/prtmax/orion.git\n'; exit 0 ;;
-    "cat-file -e") [[ "${MOCK_TRUSTED:-}" == 1 ]]; exit ;;
-    "merge-base --is-ancestor") [[ "${MOCK_TRUSTED:-}" == 1 ]]; exit ;;
+    "tag --list")
+      if [[ -n "${MOCK_LATEST_TAG:-}" ]]; then
+        printf '%s\n' "$MOCK_LATEST_TAG"
+      fi
+      exit 0
+      ;;
     "checkout --detach")
       mkdir -p "$root/tools/rigel_build/bin" "$root/apps/rigel"
       printf 'assembler\n' > "$root/tools/rigel_build/bin/assemble.dart"
@@ -130,22 +122,61 @@ fi
 exit 0
 MOCKGIT
 chmod +x "$work/git-bin/git"
+
+# 1. latest ref with tag available and empty lockDigest/commit
+jq '.buildInput.source.ref="latest" | del(.buildInput.source.commit) | del(.buildInput.source.lockDigest)' "$work/spec.json" > "$work/ref-latest-raw.json"
+bind_spec_digests "$work/ref-latest-raw.json" "$work/ref-latest-spec.json"
 : > "$work/git.log"
-MOCK_TRUSTED=1 MOCK_LOCK="$work/mock-lock" MOCK_GIT_LOG="$work/git.log" PATH="$work/git-bin:$PATH" \
+MOCK_LATEST_TAG="v1.4.2" MOCK_LOCK="$work/mock-lock" MOCK_GIT_LOG="$work/git.log" PATH="$work/git-bin:$PATH" \
   COSMOS_BUILD_REPOSITORY_TOKEN=secret-token "${ROOT_DIR}/scripts/checkout-source" \
-  --spec "$work/checkout-spec.json" --workspace "$work/trusted-source"
-grep -q 'refs/heads/main:refs/remotes/origin/main' "$work/git.log"
-grep -q 'merge-base --is-ancestor' "$work/git.log"
+  --spec "$work/ref-latest-spec.json" --workspace "$work/latest-tag-source"
+grep -q 'fetch --filter=blob:none --tags --force origin' "$work/git.log"
+grep -q 'checkout --detach v1.4.2' "$work/git.log"
 if grep -q 'secret-token@' "$work/git.log"; then
   log "repository token was embedded in the remote URL"
   exit 1
 fi
-if MOCK_TRUSTED=0 MOCK_LOCK="$work/mock-lock" MOCK_GIT_LOG="$work/git.log" PATH="$work/git-bin:$PATH" \
-  "${ROOT_DIR}/scripts/checkout-source" --spec "$work/checkout-spec.json" \
-  --workspace "$work/unreviewed-source" >/dev/null 2>&1; then
-  log "commit outside trusted Orion main history was checked out"
-  exit 1
-fi
+
+# 2. latest ref fallback to origin/main when repository has no tags
+: > "$work/git.log"
+MOCK_LATEST_TAG="" MOCK_LOCK="$work/mock-lock" MOCK_GIT_LOG="$work/git.log" PATH="$work/git-bin:$PATH" \
+  "${ROOT_DIR}/scripts/checkout-source" \
+  --spec "$work/ref-latest-spec.json" --workspace "$work/latest-main-source"
+grep -q 'refs/heads/main:refs/remotes/origin/main' "$work/git.log"
+grep -q 'checkout --detach refs/remotes/origin/main' "$work/git.log"
+
+# 3. main ref and specific tag ref
+jq '.buildInput.source.ref="main" | del(.buildInput.source.commit) | del(.buildInput.source.lockDigest)' "$work/spec.json" > "$work/ref-main-raw.json"
+bind_spec_digests "$work/ref-main-raw.json" "$work/ref-main-spec.json"
+: > "$work/git.log"
+MOCK_LOCK="$work/mock-lock" MOCK_GIT_LOG="$work/git.log" PATH="$work/git-bin:$PATH" \
+  "${ROOT_DIR}/scripts/checkout-source" --spec "$work/ref-main-spec.json" --workspace "$work/main-source"
+grep -q 'checkout --detach refs/remotes/origin/main' "$work/git.log"
+
+jq '.buildInput.source.ref="v1.0.0" | del(.buildInput.source.commit) | del(.buildInput.source.lockDigest)' "$work/spec.json" > "$work/ref-tag-raw.json"
+bind_spec_digests "$work/ref-tag-raw.json" "$work/ref-tag-spec.json"
+: > "$work/git.log"
+MOCK_LOCK="$work/mock-lock" MOCK_GIT_LOG="$work/git.log" PATH="$work/git-bin:$PATH" \
+  "${ROOT_DIR}/scripts/checkout-source" --spec "$work/ref-tag-spec.json" --workspace "$work/tag-source"
+grep -q 'fetch --filter=blob:none --tags --force origin v1.0.0' "$work/git.log"
+grep -q 'checkout --detach v1.0.0' "$work/git.log"
+
+# 4. ensure-flutter prefers workspace .fvmrc over empty or mismatched buildInput.source.flutterVersion
+mkdir -p "$work/flutter-ws" "$work/flutter-bin"
+printf '{"flutter":"3.41.2"}\n' > "$work/flutter-ws/.fvmrc"
+cat > "$work/flutter-bin/flutter" <<'MOCKFLUTTER'
+#!/usr/bin/env bash
+printf 'Flutter 3.41.2 • channel stable\n'
+MOCKFLUTTER
+cat > "$work/flutter-bin/dart" <<'MOCKDART'
+#!/usr/bin/env bash
+printf 'Dart SDK version: 3.11.0\n'
+MOCKDART
+chmod +x "$work/flutter-bin/flutter" "$work/flutter-bin/dart"
+jq '.buildInput.source.ref="latest" | .buildInput.source.flutterVersion="" | del(.buildInput.source.commit) | del(.buildInput.source.lockDigest)' "$work/spec.json" > "$work/flutter-raw.json"
+bind_spec_digests "$work/flutter-raw.json" "$work/flutter-spec.json"
+RUNALL_FLUTTER="$work/flutter-bin/flutter" RUNALL_DART="$work/flutter-bin/dart" \
+  "${ROOT_DIR}/scripts/ensure-flutter" --spec "$work/flutter-spec.json" --workspace "$work/flutter-ws" --env-file "$work/flutter.env"
 
 log "contract: OIDC exchange sends run-bound token and persists only stage credential"
 mock_bin="$work/mock-bin"
