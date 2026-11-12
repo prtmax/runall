@@ -129,7 +129,7 @@ void main() {
           );
           expect(
             job['uses'],
-            endsWith('@cdea94792a52f4bcfe1bd04fda3d3de27176cd5b'),
+            endsWith('@1431b8a61ad30875d5f827a6ab233f617b68ee31'),
           );
         } else {
           final steps = job['steps'] as YamlList;
