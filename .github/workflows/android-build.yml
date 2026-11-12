@@ -9,6 +9,10 @@ on:
         description: Mercury platform build run id
         required: true
         type: string
+      build_run_ids:
+        description: Comma-separated platform run ids (defaults to build_run_id)
+        required: false
+        type: string
 
 # Compile must not receive id-token. Sensitive jobs opt in below.
 permissions:
@@ -19,9 +23,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-prepare.yml@84647bdff47a7662cbe0a0ced5477d8172cae9d6
+    uses: prtmax/runall/.github/workflows/reusable-prepare.yml@cdea94792a52f4bcfe1bd04fda3d3de27176cd5b
     with:
       build_run_id: ${{ inputs.build_run_id }}
+      build_run_ids: ${{ inputs.build_run_ids }}
     secrets:
       COSMOS_BUILD_AUTH_EXCHANGE_URL: ${{ secrets.COSMOS_BUILD_AUTH_EXCHANGE_URL }}
       COSMOS_BUILD_SPEC_URL: ${{ secrets.COSMOS_BUILD_SPEC_URL }}
@@ -30,9 +35,14 @@ jobs:
 
   build-android:
     needs: prepare
-    if: needs.prepare.outputs.platform == 'android'
+    if: always() && !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.has_android == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        item: ${{ fromJson(needs.prepare.outputs.android_matrix) }}
     permissions:
       contents: read
     steps:
@@ -50,19 +60,19 @@ jobs:
       - name: Download build spec
         uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
         with:
-          name: build-spec-${{ inputs.build_run_id }}
+          name: build-spec-${{ matrix.item.build_run_id }}
           path: .
 
       - name: Download source workspace
         uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
         with:
-          name: source-workspace-${{ inputs.build_run_id }}
+          name: source-workspace-${{ matrix.item.source_sha }}
           path: packed
 
       - name: Download frozen resources
         uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
         with:
-          name: frozen-resources-${{ inputs.build_run_id }}
+          name: frozen-resources-${{ matrix.item.build_run_id }}
           path: frozen-resources
 
       - name: Unpack source workspace
@@ -77,6 +87,26 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+
+      - name: Restore Flutter SDK
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/fvm/versions
+          key: flutter-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('workspace/.fvmrc') }}
+      - name: Restore pub cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('workspace/**/pubspec.lock') }}
+          restore-keys: pub-${{ runner.os }}-
+      - name: Restore Gradle cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('workspace/**/*.gradle*', 'workspace/**/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
 
       - name: Install pinned Flutter
         shell: bash
@@ -96,20 +126,25 @@ jobs:
       - name: Upload unsigned artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: unsigned-${{ inputs.build_run_id }}
+          name: unsigned-${{ matrix.item.build_run_id }}
           path: unsigned/
           if-no-files-found: error
 
   sign-android:
     needs: [prepare, build-android]
-    if: needs.prepare.outputs.platform == 'android' && needs.build-android.result == 'success'
+    if: always() && !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.has_android == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        item: ${{ fromJson(needs.prepare.outputs.android_matrix) }}
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-sign-android.yml@84647bdff47a7662cbe0a0ced5477d8172cae9d6
+    uses: prtmax/runall/.github/workflows/reusable-sign-android.yml@cdea94792a52f4bcfe1bd04fda3d3de27176cd5b
     with:
-      build_run_id: ${{ inputs.build_run_id }}
-      application_id: ${{ needs.prepare.outputs.application_id }}
+      build_run_id: ${{ matrix.item.build_run_id }}
+      application_id: ${{ matrix.item.application_id }}
     secrets:
       COSMOS_BUILD_AUTH_EXCHANGE_URL: ${{ secrets.COSMOS_BUILD_AUTH_EXCHANGE_URL }}
       COSMOS_BUILD_CALLBACK_URL: ${{ secrets.COSMOS_BUILD_CALLBACK_URL }}
@@ -117,18 +152,18 @@ jobs:
 
   finalize-android:
     needs: [prepare, build-android, sign-android]
-    if: >-
-      always() &&
-      needs.prepare.result == 'success' &&
-      needs.prepare.outputs.platform == 'android' &&
-      (needs.sign-android.result == 'success' || needs.sign-android.result == 'failure' || needs.build-android.result == 'failure')
+    if: always() && !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.has_android == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        item: ${{ fromJson(needs.prepare.outputs.android_matrix) }}
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-finalize-android.yml@84647bdff47a7662cbe0a0ced5477d8172cae9d6
+    uses: prtmax/runall/.github/workflows/reusable-finalize-android.yml@cdea94792a52f4bcfe1bd04fda3d3de27176cd5b
     with:
-      build_run_id: ${{ inputs.build_run_id }}
-      upstream_result: ${{ needs.sign-android.result == 'success' && 'success' || 'failure' }}
+      build_run_id: ${{ matrix.item.build_run_id }}
     secrets:
       COSMOS_BUILD_AUTH_EXCHANGE_URL: ${{ secrets.COSMOS_BUILD_AUTH_EXCHANGE_URL }}
       COSMOS_BUILD_CALLBACK_URL: ${{ secrets.COSMOS_BUILD_CALLBACK_URL }}
@@ -136,9 +171,14 @@ jobs:
 
   build-ios:
     needs: prepare
-    if: needs.prepare.outputs.platform == 'ios'
+    if: always() && !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.has_ios == 'true'
     runs-on: macos-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        item: ${{ fromJson(needs.prepare.outputs.ios_matrix) }}
     permissions:
       contents: read
     steps:
@@ -156,19 +196,19 @@ jobs:
       - name: Download build spec
         uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
         with:
-          name: build-spec-${{ inputs.build_run_id }}
+          name: build-spec-${{ matrix.item.build_run_id }}
           path: .
 
       - name: Download source workspace
         uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
         with:
-          name: source-workspace-${{ inputs.build_run_id }}
+          name: source-workspace-${{ matrix.item.source_sha }}
           path: packed
 
       - name: Download frozen resources
         uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
         with:
-          name: frozen-resources-${{ inputs.build_run_id }}
+          name: frozen-resources-${{ matrix.item.build_run_id }}
           path: frozen-resources
 
       - name: Unpack source workspace
@@ -177,6 +217,18 @@ jobs:
           set -euo pipefail
           mkdir -p workspace
           tar -xf packed/source-workspace.tar -C workspace
+
+      - name: Restore Flutter SDK
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/fvm/versions
+          key: flutter-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('workspace/.fvmrc') }}
+      - name: Restore pub cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('workspace/**/pubspec.lock') }}
+          restore-keys: pub-${{ runner.os }}-
 
       - name: Install pinned Flutter
         shell: bash
@@ -196,19 +248,24 @@ jobs:
       - name: Upload unsigned app
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: unsigned-${{ inputs.build_run_id }}
+          name: unsigned-${{ matrix.item.build_run_id }}
           path: unsigned/
           if-no-files-found: error
 
   sign-ios:
     needs: [prepare, build-ios]
-    if: needs.prepare.outputs.platform == 'ios' && needs.build-ios.result == 'success'
+    if: always() && !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.has_ios == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        item: ${{ fromJson(needs.prepare.outputs.ios_matrix) }}
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-sign-ios.yml@84647bdff47a7662cbe0a0ced5477d8172cae9d6
+    uses: prtmax/runall/.github/workflows/reusable-sign-ios.yml@cdea94792a52f4bcfe1bd04fda3d3de27176cd5b
     with:
-      build_run_id: ${{ inputs.build_run_id }}
+      build_run_id: ${{ matrix.item.build_run_id }}
     secrets:
       COSMOS_BUILD_AUTH_EXCHANGE_URL: ${{ secrets.COSMOS_BUILD_AUTH_EXCHANGE_URL }}
       COSMOS_BUILD_CALLBACK_URL: ${{ secrets.COSMOS_BUILD_CALLBACK_URL }}
@@ -216,18 +273,18 @@ jobs:
 
   finalize-ios:
     needs: [prepare, build-ios, sign-ios]
-    if: >-
-      always() &&
-      needs.prepare.result == 'success' &&
-      needs.prepare.outputs.platform == 'ios' &&
-      (needs.sign-ios.result == 'success' || needs.sign-ios.result == 'failure' || needs.build-ios.result == 'failure')
+    if: always() && !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.has_ios == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        item: ${{ fromJson(needs.prepare.outputs.ios_matrix) }}
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-finalize-ios.yml@84647bdff47a7662cbe0a0ced5477d8172cae9d6
+    uses: prtmax/runall/.github/workflows/reusable-finalize-ios.yml@cdea94792a52f4bcfe1bd04fda3d3de27176cd5b
     with:
-      build_run_id: ${{ inputs.build_run_id }}
-      upstream_result: ${{ needs.sign-ios.result == 'success' && 'success' || 'failure' }}
+      build_run_id: ${{ matrix.item.build_run_id }}
     secrets:
       COSMOS_BUILD_AUTH_EXCHANGE_URL: ${{ secrets.COSMOS_BUILD_AUTH_EXCHANGE_URL }}
       COSMOS_BUILD_CALLBACK_URL: ${{ secrets.COSMOS_BUILD_CALLBACK_URL }}

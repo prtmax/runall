@@ -13,7 +13,7 @@ a dispatch that did not return a GitHub run id. Trigger `.github/workflows/andro
 ```json
 {
   "ref": "<pinned runall revision>",
-  "inputs": { "build_run_id": "<mercury-build-run-id>" }
+  "inputs": { "build_run_id": "<primary-run-id>", "build_run_ids": "<primary-run-id>,<sibling-run-id>" }
 }
 ```
 
@@ -143,3 +143,11 @@ checkout SHA, then pin the reusable workflow commit in the caller and Mercury's
 allowed stage revisions. A main merge alone does not update an external private
 caller or a deployed environment override. Never retain an old runtime fallback
 or loosen OIDC/required checks to complete that rollout.
+
+Mercury groups at most 10 Apps (up to 20 Android/iOS run IDs) per dispatch.
+`build_run_ids` is optional; omitting it retains single-run behavior. The primary
+ID names the Actions run for reconciliation. Prepare authenticates each run
+independently and archives each resolved Orion commit once. Android matrices
+allow four concurrent Apps and iOS matrices allow two; sibling failures do not
+skip valid signed artifacts. Flutter, pub and Gradle caches contain toolchains
+and dependencies only, never build credentials or signing material.
