@@ -76,7 +76,9 @@ jobs:
       - name: Install locked artifact client
         run: npm ci --ignore-scripts --prefix tools/artifact_upload
       - name: Upload per-run inputs and shared source workspaces
-        run: node tools/artifact_upload/upload.cjs prepared/uploads.json
+        uses: ./tools/artifact_upload
+        with:
+          manifest: prepared/uploads.json
       - name: Report preparation upload failure
         if: failure()
         shell: bash

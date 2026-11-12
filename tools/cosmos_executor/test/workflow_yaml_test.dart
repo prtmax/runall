@@ -155,4 +155,32 @@ void main() {
       }
     }
   });
+  test(
+    'artifact upload uses a JavaScript action with runner runtime credentials',
+    () {
+      final root = Directory.current.parent.parent.path;
+      final workflow = loadYaml(
+        File('$root/.github/workflows/reusable-prepare.yml').readAsStringSync(),
+      ) as YamlMap;
+      final steps = workflow['jobs']['prepare']['steps'] as YamlList;
+      final upload = steps.firstWhere(
+        (dynamic step) =>
+            step['name'] ==
+            'Upload per-run inputs and shared source workspaces',
+      );
+      expect(upload['uses'], './tools/artifact_upload');
+      expect(
+        upload['run'],
+        isNull,
+        reason: 'Shell steps do not receive the artifact runtime credentials',
+      );
+      expect(upload['with']['manifest'], 'prepared/uploads.json');
+      final action = loadYaml(
+        File('$root/tools/artifact_upload/action.yml').readAsStringSync(),
+      ) as YamlMap;
+      expect(action['runs']['using'], 'node24');
+      expect(action['runs']['main'], 'upload.cjs');
+      expect(action['inputs']['manifest']['required'], true);
+    },
+  );
 }
