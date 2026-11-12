@@ -54,10 +54,10 @@ else
   assert_non_empty "COSMOS_BUILD_CREDENTIAL" "${COSMOS_BUILD_CREDENTIAL:-}"
   assert_non_empty "BUILD_RUN_ID" "$RUN_ID"
   require_cmd curl
-  curl --fail-with-body --retry 3 \
+  curl "${PLATFORM_CURL_ARGS[@]}" --fail -sS \
     -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
     -H 'Accept: application/json' \
-    "${COSMOS_BUILD_SPEC_URL%/}/${RUN_ID}/spec" > "$OUTPUT"
+    "${COSMOS_BUILD_SPEC_URL%/}/${RUN_ID}/spec" --output "$OUTPUT"
 fi
 
 validate_build_spec_document "$OUTPUT" "$RUN_ID"

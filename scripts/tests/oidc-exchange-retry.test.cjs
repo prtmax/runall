@@ -9,11 +9,21 @@ async function exchange(statuses) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'runall-exchange-'));
   const output = path.join(directory, 'credential.env');
   const requests = [];
+  const versions = [];
+  const ports = [];
   const server = http.createServer(async (request, response) => {
     let body = '';
     for await (const chunk of request) body += chunk;
     requests.push(JSON.parse(body));
+    versions.push(request.httpVersion);
+    ports.push(request.socket.remotePort);
     const status = statuses[Math.min(requests.length - 1, statuses.length - 1)];
+    if (status === 'stall') return;
+    if (status === 'partial') {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.write('{"accessToken":');
+      return;
+    }
     response.writeHead(status, { 'Content-Type': 'application/json' });
     response.end(JSON.stringify(status === 200
       ? { accessToken: 'stage-credential' }
@@ -39,7 +49,7 @@ async function exchange(statuses) {
       if (error.code === 'ENOENT') return '';
       throw error;
     });
-    return { code, requests, credential };
+    return { code, requests, credential, versions, ports };
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await rm(directory, { recursive: true });
@@ -53,6 +63,21 @@ async function main() {
   assert.deepEqual(recovered.requests[0], { runId: '900', githubOidcToken: 'test-oidc-token' });
   assert.deepEqual(recovered.requests[1], recovered.requests[0]);
   assert.equal(recovered.credential, 'COSMOS_BUILD_CREDENTIAL=stage-credential\n');
+  assert.deepEqual(recovered.versions, ['1.1', '1.1']);
+
+  const started = Date.now();
+  const reconnected = await exchange(['stall', 200]);
+  assert.equal(reconnected.code, 0);
+  assert.equal(reconnected.requests.length, 2);
+  assert.notEqual(reconnected.ports[0], reconnected.ports[1]);
+  assert.ok(Date.now() - started >= 10000);
+  assert.ok(Date.now() - started < 23000, 'a stalled attempt must not wait 25 seconds');
+  assert.equal(reconnected.credential, 'COSMOS_BUILD_CREDENTIAL=stage-credential\n');
+
+  const partial = await exchange(['partial', 200]);
+  assert.equal(partial.code, 0);
+  assert.equal(partial.requests.length, 2);
+  assert.equal(partial.credential, 'COSMOS_BUILD_CREDENTIAL=stage-credential\n');
 
   const rejected = await exchange([403]);
   assert.notEqual(rejected.code, 0);
@@ -61,9 +86,9 @@ async function main() {
 
   const exhausted = await exchange([503]);
   assert.notEqual(exhausted.code, 0);
-  assert.equal(exhausted.requests.length, 3);
+  assert.equal(exhausted.requests.length, 7);
   assert.equal(exhausted.credential, '');
-  console.log('OIDC exchange retries recover transient failures, reject forbidden identities, and stop after three attempts');
+  console.log('OIDC exchange retries recover transient failures, reject forbidden identities, and stop after seven attempts');
 }
 
 main().catch((error) => {

@@ -95,18 +95,12 @@ cleanup() { rm -rf "$workdir"; }
 trap cleanup EXIT
 
 post_json() {
-  local url="$1" body="$2" out="$3" attempt
-  for attempt in 1 2 3; do
-    if curl --fail-with-body --retry 0 -sS -X POST \
-      -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
-      -H 'Content-Type: application/json' \
-      --data-binary "$body" \
-      "$url" > "$out"; then
-      return 0
-    fi
-    log "POST failed attempt ${attempt}"
-  done
-  return 1
+  local url="$1" body="$2" out="$3"
+  curl "${PLATFORM_CURL_ARGS[@]}" --fail -sS -X POST \
+    -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
+    -H 'Content-Type: application/json' \
+    --data-binary "$body" \
+    "$url" --output "$out"
 }
 
 request_body="$(jq -n \
@@ -128,22 +122,18 @@ put_url="$(jq -r '.url // .uploadUrl // .presignedUrl' "$workdir/grant.json")"
 headers_json="$(jq -c '.headers // .uploadHeaders // {}' "$workdir/grant.json")"
 put_once() {
   local -a curl_args
-  curl_args=(-sS --fail-with-body --proto '=https' -X PUT --data-binary "@${ARTIFACT}")
+  # APK/IPA transfers need a longer total budget than small Platform JSON calls.
+  # A stalled transfer still reconnects after ten seconds without progress.
+  curl_args=("${PLATFORM_CURL_ARGS[@]}" --max-time 300 --retry-max-time 600
+    --speed-limit 1 --speed-time 10
+    -sS --fail --proto '=https' -X PUT --data-binary "@${ARTIFACT}")
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     curl_args+=(-H "$line")
   done < <(printf '%s' "$headers_json" | jq -r 'to_entries[] | "\(.key): \(.value)"')
   curl "${curl_args[@]}" "$put_url"
 }
-put_ok=0
-for attempt in 1 2 3; do
-  if put_once; then
-    put_ok=1
-    break
-  fi
-  log "PUT failed attempt ${attempt}"
-done
-if [[ "$put_ok" != 1 ]]; then
+if ! put_once; then
   log "artifact PUT failed; complete was not called"
   exit 1
 fi

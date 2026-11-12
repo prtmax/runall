@@ -84,7 +84,7 @@ else
   exit 1
 fi
 
-curl --fail-with-body --retry 3 -X POST \
+curl "${PLATFORM_CURL_ARGS[@]}" --fail -sS -X POST \
   -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
   -H 'Content-Type: application/json' \
   --data-binary "$payload" \

@@ -227,6 +227,11 @@ mock_bin="$work/mock-bin"
 mkdir -p "$mock_bin"
 cat > "$mock_bin/curl" <<'MOCK'
 #!/usr/bin/env bash
+for ((i=1; i<=$#; i++)); do
+  if [[ "${!i}" == "--output" ]]; then
+    next=$((i+1)); exec > "${!next}"
+  fi
+done
 while [[ $# -gt 0 ]]; do
   if [[ "$1" == "--data-binary" ]]; then
     printf '%s\n' "$2" > "${MOCK_PAYLOAD:?}"
@@ -250,6 +255,11 @@ fi
 
 cat > "$mock_bin/curl" <<'MOCK'
 #!/usr/bin/env bash
+for ((i=1; i<=$#; i++)); do
+  if [[ "${!i}" == "--output" ]]; then
+    next=$((i+1)); exec > "${!next}"
+  fi
+done
 url="${@: -1}"
 if [[ "$url" == "${MOCK_FAIL_EXCHANGE_URL:-}" ]]; then
   exit 22
@@ -301,6 +311,11 @@ grep -qx 'COSMOS_BUILD_RESOLVED_BASE_URL=https://mercury-stg.iprtapp.com/api/v1/
 log "contract: callback and artifact upload remain run-bound and fail closed"
 cat > "$mock_bin/curl" <<'MOCK'
 #!/usr/bin/env bash
+for ((i=1; i<=$#; i++)); do
+  if [[ "${!i}" == "--output" ]]; then
+    next=$((i+1)); exec > "${!next}"
+  fi
+done
 joined="$*"
 data=""
 prev=""

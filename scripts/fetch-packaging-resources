@@ -67,7 +67,7 @@ else
   assert_non_empty "BUILD_RUN_ID" "$RUN_ID"
   require_cmd curl
   url="${COSMOS_BUILD_SPEC_URL%/}/${RUN_ID}/packaging-resources"
-  code="$(curl --silent --show-error --retry 3 --output "$response" --write-out '%{http_code}' \
+  code="$(curl "${PLATFORM_CURL_ARGS[@]}" --silent --show-error --output "$response" --write-out '%{http_code}' \
     -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
     -H 'Accept: application/json' \
     "$url" || true)"

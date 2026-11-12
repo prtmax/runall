@@ -2,6 +2,13 @@
 # Shared helpers for runall executor scripts. No secrets are logged.
 set -euo pipefail
 
+# Keep Platform requests on HTTP/1.1 across public reverse proxies. Short
+# per-attempt deadlines reconnect quickly after silent cross-border packet loss.
+# Curl retries transient transport/HTTP failures, never authentication rejection.
+PLATFORM_CURL_ARGS=(--http1.1 --connect-timeout 5 --max-time 10
+  --retry 6 --retry-delay 1 --retry-max-time 80 --retry-connrefused
+  --write-out '%{stderr}[runall] HTTP status=%{response_code} remote=%{remote_ip} version=%{http_version} connect=%{time_connect}s tls=%{time_appconnect}s total=%{time_total}s\n')
+
 log() {
   printf '[runall] %s\n' "$*" >&2
 }
@@ -263,7 +270,7 @@ report_sign_result() {
   digest="$(sha256_file "$artifact")"
   require_cmd curl
   require_cmd jq
-  curl --fail-with-body -sS -X POST \
+  curl "${PLATFORM_CURL_ARGS[@]}" --fail -sS -X POST \
     -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
     -H 'Content-Type: application/json' \
     --data-binary "$(jq -n \
