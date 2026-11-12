@@ -138,7 +138,8 @@ if [[ ! "$identity" =~ ^[0-9A-Fa-f]{40}$ ]]; then
   identity="$(printf '%s\n' "$untrusted_text" | sed -n 's/^[[:space:]]*[0-9][0-9]*)[[:space:]]\([0-9A-Fa-f]\{40\}\)[[:space:]].*/\1/p')"
   identity="${identity%%$'\n'*}"
 fi
-if [[ ! "$identity" =~ ^[0-9A-Fa-f]{40}$ || "${identity,,}" == "$want" ]]; then
+identity_lower="$(printf '%s' "$identity" | tr '[:upper:]' '[:lower:]')"
+if [[ ! "$identity" =~ ^[0-9A-Fa-f]{40}$ || "$identity_lower" == "$want" ]]; then
   log "signing identity was not imported into the temporary keychain"
   exit 1
 fi
@@ -166,7 +167,7 @@ codesign_target() {
   shift
   local err_file="$tmpdir/codesign.err"
   if ! codesign --force --sign "$identity" --keychain "$keychain" --timestamp=none "$@" "$target" 2>"$err_file"; then
-    if grep -q "CSSMERR_TP_NOT_TRUSTED" "$err_file" 2>/dev/null; then
+    if grep -Eq "CSSMERR_TP_NOT_TRUSTED|unable to build chain|errSecInternalComponent" "$err_file" 2>/dev/null; then
       log "falling back to ad-hoc codesign for synthetic test-CA identity on $target"
       codesign --force --sign - --timestamp=none "$@" "$target"
     else

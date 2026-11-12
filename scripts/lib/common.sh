@@ -200,7 +200,7 @@ normalize_sha256() {
   local raw="${1#sha256:}"
   raw="${raw//:/}"
   raw="${raw// /}"
-  raw="${raw,,}"
+  raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
   if [[ ! "$raw" =~ ^[0-9a-f]{64}$ ]]; then
     log "value is not a SHA-256 digest"
     exit 1

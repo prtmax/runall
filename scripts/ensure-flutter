@@ -102,9 +102,10 @@ resolve_pinned_binaries() {
 }
 
 bins_out="$(resolve_pinned_binaries "$pinned")"
-mapfile -t bins <<< "$bins_out"
-flutter_bin="${bins[0]}"
-dart_bin="${bins[1]}"
+{
+  IFS= read -r flutter_bin || true
+  IFS= read -r dart_bin || true
+} <<< "$bins_out"
 if ! "$flutter_bin" --version | grep -F "$pinned" >/dev/null; then
   log "installed Flutter does not match expected version $pinned"
   exit 1
