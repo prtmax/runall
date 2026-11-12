@@ -247,6 +247,56 @@ if grep -q 'github-oidc' "$work/stage.env"; then
   exit 1
 fi
 
+cat > "$mock_bin/curl" <<'MOCK'
+#!/usr/bin/env bash
+url="${@: -1}"
+if [[ "$url" == "${MOCK_FAIL_EXCHANGE_URL:-}" ]]; then
+  exit 22
+fi
+for ((i=1; i<=$#; i++)); do
+  if [[ "${!i}" == "--data-binary" ]]; then
+    next=$((i+1))
+    printf '%s\n' "${!next}" > "${MOCK_PAYLOAD:?}"
+    printf '{"accessToken":"fallback-token"}\n'
+    exit 0
+  fi
+done
+exit 1
+MOCK
+chmod +x "$mock_bin/curl"
+: > "$work/fallback-birch.env"
+MOCK_PAYLOAD="$work/exchange-fallback.json" \
+  MOCK_FAIL_EXCHANGE_URL="https://mercury-stg.iprtapp.com/api/v1/runtime/internal/build-auth/exchange" \
+  COSMOS_BUILD_AUTH_EXCHANGE_URL="https://mercury-stg.iprtapp.com/api/v1/runtime/internal/build-auth/exchange" \
+  COSMOS_BUILD_OIDC_TOKEN=github-oidc BUILD_RUN_ID=901 PATH="$mock_bin:$PATH" \
+  "${ROOT_DIR}/scripts/exchange-build-credential" --run-id 901 --output-env "$work/fallback-birch.env"
+grep -qx 'COSMOS_BUILD_CREDENTIAL=fallback-token' "$work/fallback-birch.env"
+grep -qx 'COSMOS_BUILD_RESOLVED_BASE_URL=https://p8018.birch.iprtapp.com/api/v1/runtime/internal' "$work/fallback-birch.env"
+
+: > "$work/fallback-stg.env"
+MOCK_PAYLOAD="$work/exchange-fallback-stg.json" \
+  MOCK_FAIL_EXCHANGE_URL="https://p8018.birch.iprtapp.com/api/v1/runtime/internal/build-auth/exchange" \
+  COSMOS_BUILD_AUTH_EXCHANGE_URL="https://p8018.birch.iprtapp.com/api/v1/runtime/internal/build-auth/exchange" \
+  COSMOS_BUILD_OIDC_TOKEN=github-oidc BUILD_RUN_ID=902 PATH="$mock_bin:$PATH" \
+  "${ROOT_DIR}/scripts/exchange-build-credential" --run-id 902 --output-env "$work/fallback-stg.env"
+grep -qx 'COSMOS_BUILD_CREDENTIAL=fallback-token' "$work/fallback-stg.env"
+grep -qx 'COSMOS_BUILD_RESOLVED_BASE_URL=https://mercury-stg.iprtapp.com/api/v1/runtime/internal' "$work/fallback-stg.env"
+
+(
+  export COSMOS_BUILD_AUTH_EXCHANGE_URL="https://mercury-stg.iprtapp.com/api/v1/runtime/internal/build-auth/exchange"
+  export COSMOS_BUILD_SPEC_URL="https://mercury-stg.iprtapp.com/api/v1/runtime/internal"
+  export COSMOS_BUILD_CALLBACK_URL="https://mercury-stg.iprtapp.com/api/v1/runtime/internal"
+  export COSMOS_BUILD_SIGN_MATERIAL_URL="https://mercury-stg.iprtapp.com/api/v1/runtime/internal"
+  export COSMOS_BUILD_ARTIFACT_UPLOAD_URL="https://mercury-stg.iprtapp.com/api/v1/runtime/internal"
+  export COSMOS_BUILD_RESOLVED_BASE_URL="https://p8018.birch.iprtapp.com/api/v1/runtime/internal/"
+  source "${ROOT_DIR}/scripts/lib/common.sh"
+  [[ "${COSMOS_BUILD_AUTH_EXCHANGE_URL}" == "https://p8018.birch.iprtapp.com/api/v1/runtime/internal/build-auth/exchange" ]]
+  [[ "${COSMOS_BUILD_SPEC_URL}" == "https://p8018.birch.iprtapp.com/api/v1/runtime/internal" ]]
+  [[ "${COSMOS_BUILD_CALLBACK_URL}" == "https://p8018.birch.iprtapp.com/api/v1/runtime/internal" ]]
+  [[ "${COSMOS_BUILD_SIGN_MATERIAL_URL}" == "https://p8018.birch.iprtapp.com/api/v1/runtime/internal" ]]
+  [[ "${COSMOS_BUILD_ARTIFACT_UPLOAD_URL}" == "https://p8018.birch.iprtapp.com/api/v1/runtime/internal" ]]
+)
+
 log "contract: callback and artifact upload remain run-bound and fail closed"
 cat > "$mock_bin/curl" <<'MOCK'
 #!/usr/bin/env bash
