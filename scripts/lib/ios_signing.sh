@@ -12,14 +12,15 @@ prepare_ios_pkcs12() {
   if ! openssl pkcs12 -in "$directory/cert.p12" -cacerts -nokeys -passin "pass:$password" -out "$directory/chain.pem" 2>/dev/null; then
     openssl pkcs12 -legacy -in "$directory/cert.p12" -cacerts -nokeys -passin "pass:$password" -out "$directory/chain.pem" || return
   fi
-  local chain_args=()
-  if grep -q 'BEGIN CERTIFICATE' "$directory/chain.pem"; then
-    chain_args=(-certfile "$directory/chain.pem")
-  fi
-  # Explicit algorithms also work with macOS OpenSSL versions without -legacy.
-  openssl pkcs12 -export -in "$directory/cert.pem" -inkey "$directory/key.pem" \
+  # Positional arguments remain safe under macOS Bash 3.2 nounset, including
+  # packages without an optional CA chain.
+  set -- -export -in "$directory/cert.pem" -inkey "$directory/key.pem" \
     -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 \
-    "${chain_args[@]}" -passout "pass:$password" -out "$directory/import.p12"
+    -passout "pass:$password" -out "$directory/import.p12"
+  if grep -q 'BEGIN CERTIFICATE' "$directory/chain.pem"; then
+    set -- "$@" -certfile "$directory/chain.pem"
+  fi
+  openssl pkcs12 "$@"
 }
 
 find_ios_signing_identity() {
