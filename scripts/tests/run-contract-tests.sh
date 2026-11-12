@@ -222,6 +222,7 @@ grep -q "fvm/versions/3.41.2/bin/flutter" "$work/fvm-noisy.env"
 grep -q "fvm/versions/3.41.2/bin/dart" "$work/fvm-noisy.env"
 
 log "contract: OIDC exchange sends run-bound token and persists only stage credential"
+node "${ROOT_DIR}/scripts/tests/oidc-exchange-retry.test.cjs"
 mock_bin="$work/mock-bin"
 mkdir -p "$mock_bin"
 cat > "$mock_bin/curl" <<'MOCK'
