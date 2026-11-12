@@ -5,7 +5,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 
-async function exchange(statuses) {
+async function exchange(statuses, { actions = false, out = false } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'runall-exchange-'));
   const output = path.join(directory, 'credential.env');
   const requests = [];
@@ -32,15 +32,18 @@ async function exchange(statuses) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   try {
     const child = spawn(path.resolve(__dirname, '../exchange-build-credential'), [
-      '--run-id', '900', '--output-env', output,
+      '--run-id', '900', out ? '--out' : '--output-env', output,
     ], {
       env: {
         ...process.env,
+        GITHUB_ACTIONS: String(actions),
         COSMOS_BUILD_AUTH_EXCHANGE_URL: `http://127.0.0.1:${server.address().port}/exchange`,
         COSMOS_BUILD_OIDC_TOKEN: 'test-oidc-token',
       },
-      stdio: 'ignore',
+      stdio: ['ignore', 'pipe', 'ignore'],
     });
+    let stdout = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
     const code = await new Promise((resolve, reject) => {
       child.once('error', reject);
       child.once('exit', resolve);
@@ -49,7 +52,7 @@ async function exchange(statuses) {
       if (error.code === 'ENOENT') return '';
       throw error;
     });
-    return { code, requests, credential, versions, ports };
+    return { code, requests, credential, versions, ports, stdout };
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await rm(directory, { recursive: true });
@@ -58,6 +61,14 @@ async function exchange(statuses) {
 
 async function main() {
   const recovered = await exchange([503, 200]);
+  assert.equal(recovered.stdout, '', 'local exchanges must never print credentials');
+  for (const out of [false, true]) {
+    const masked = await exchange([200], { actions: true, out });
+    assert.equal(masked.code, 0);
+    const token = recovered.credential.replace('COSMOS_BUILD_CREDENTIAL=', '').trim();
+    assert.equal(masked.stdout, `::add-mask::${token}\n`);
+    assert.equal(masked.credential, out ? `${token}\n` : recovered.credential);
+  }
   assert.equal(recovered.code, 0);
   assert.equal(recovered.requests.length, 2);
   assert.deepEqual(recovered.requests[0], { runId: '900', githubOidcToken: 'test-oidc-token' });
