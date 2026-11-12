@@ -75,8 +75,8 @@ if [[ "$targets" == *aab* ]]; then
   cp -f "$aab" "${OUTPUT_DIR}/app-release.aab"
 fi
 
-require_cmd aapt
 verify_android() {
+  require_cmd aapt
   local artifact="$1" badging pkg vname vcode
   badging="$(aapt dump badging "$artifact")"
   pkg="$(printf '%s\n' "$badging" | sed -n "s/package: name='\\([^']*\\)'.*/\\1/p" | head -1)"
@@ -87,11 +87,39 @@ verify_android() {
     exit 1
   fi
 }
+verify_aab() {
+  local artifact="$1" tmp_manifest
+  if command -v bundletool >/dev/null 2>&1; then
+    local manifest pkg vname vcode
+    manifest="$(bundletool dump manifest --bundle="$artifact")"
+    pkg="$(printf '%s\n' "$manifest" | sed -n 's/.*package="\([^"]*\)".*/\1/p' | head -1)"
+    vname="$(printf '%s\n' "$manifest" | sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' | head -1)"
+    vcode="$(printf '%s\n' "$manifest" | sed -n 's/.*android:versionCode="\([^"]*\)".*/\1/p' | head -1)"
+    if [[ "$pkg" != "$application_id" || "$vname" != "$version_name" || "$vcode" != "$version_code" ]]; then
+      log "android artifact identity does not match the frozen spec"
+      exit 1
+    fi
+    return 0
+  fi
+  require_cmd unzip
+  tmp_manifest="$(mktemp)"
+  if ! unzip -p "$artifact" base/manifest/AndroidManifest.xml > "$tmp_manifest"; then
+    rm -f "$tmp_manifest"
+    log "AAB is missing base/manifest/AndroidManifest.xml"
+    exit 1
+  fi
+  if ! run_dart_tool aab-manifest "$tmp_manifest" "$application_id" "$version_name" "$version_code"; then
+    rm -f "$tmp_manifest"
+    log "android artifact identity does not match the frozen spec"
+    exit 1
+  fi
+  rm -f "$tmp_manifest"
+}
 if [[ "$targets" == *apk* ]]; then
   verify_android "${OUTPUT_DIR}/app-release.apk"
 fi
 if [[ "$targets" == *aab* ]]; then
-  verify_android "${OUTPUT_DIR}/app-release.aab"
+  verify_aab "${OUTPUT_DIR}/app-release.aab"
 fi
 
 log "unsigned android artifacts in $OUTPUT_DIR"

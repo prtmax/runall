@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:math';
 
+import 'aab_manifest.dart';
 import 'core.dart';
 import 'resources.dart';
 import 'plist.dart';
@@ -54,8 +55,9 @@ void runCommand(List<String> args) {
       final profile = readPlist(a[0]);
       if (!(profile['TeamIdentifier'] as List<dynamic>? ?? []).contains(a[2]))
         fail('profile team mismatch');
-      if (profile['Entitlements']?['application-identifier'] !=
-          '${a[2]}.${a[1]}')
+      final appId =
+          profile['Entitlements']?['application-identifier'] as String? ?? '';
+      if (!_matchesProfileAppId(appId, a[2], a[1]))
         fail('profile bundle id mismatch');
       final expires = profile['ExpirationDate'];
       if (expires is! DateTime) fail('profile expiration missing');
@@ -76,6 +78,8 @@ void runCommand(List<String> args) {
       if (entitlements is! Map || entitlements.isEmpty)
         fail('profile entitlements missing');
       File(a[1]).writeAsStringSync(encodePlist(entitlements));
+    case 'aab-manifest':
+      verifyAabManifest(a);
     case 'upload-grant':
       validateGrant(a);
     default:
@@ -175,4 +179,13 @@ void validateGrant(List<String> a) {
   );
   if (url.scheme != 'https' || url.host.isEmpty || url.userInfo.isNotEmpty)
     fail('upload URL must be https without credentials');
+}
+
+bool _matchesProfileAppId(String appId, String teamId, String bundleId) {
+  if (appId == '$teamId.$bundleId' || appId == '$teamId.*') return true;
+  if (appId.startsWith('$teamId.') && appId.endsWith('.*')) {
+    final prefix = appId.substring(teamId.length + 1, appId.length - 2);
+    return prefix.isNotEmpty && bundleId.startsWith('$prefix.');
+  }
+  return false;
 }

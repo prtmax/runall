@@ -486,6 +486,23 @@ for cert_line in \
       --expected-fingerprint "$cert_hex"
 done
 
+cat > "$work/sign-bin/jarsigner" <<'MOCK'
+#!/usr/bin/env bash
+if [[ "$1" == "-verify" ]]; then
+  exit 0
+fi
+exit 0
+MOCK
+cat > "$work/sign-bin/keytool" <<'MOCK'
+#!/usr/bin/env bash
+printf "  SHA256: %s\n" "${MOCK_KEYTOOL_CERT_HEX}"
+MOCK
+chmod +x "$work/sign-bin/jarsigner" "$work/sign-bin/keytool"
+mkdir -p "$work/aab-tree/base/manifest"
+printf '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.example.native" android:versionCode="1" android:versionName="1.0.0"/>' > "$work/aab-tree/base/manifest/AndroidManifest.xml"
+(cd "$work/aab-tree" && zip -qry "$work/unsigned.aab" base)
+MOCK_KEYTOOL_CERT_HEX="$cert_hex"   PATH="$work/sign-bin:$mock_bin:$PATH"   COSMOS_BUILD_CALLBACK_URL=https://api.example.test/internal   COSMOS_BUILD_CREDENTIAL=sign-token   BUILD_RUN_ID=900   ANDROID_KEYSTORE_PATH="$work/dummy.jks"   ANDROID_KEYSTORE_PASSWORD="pass"   ANDROID_KEY_PASSWORD="pass"   ANDROID_KEY_ALIAS="upload"   "${ROOT_DIR}/scripts/sign-aab"     --spec "$work/spec.json"     --input "$work/unsigned.aab"     --output "$work/signed.aab"     --expected-fingerprint "$cert_hex"
+
 log "contract: compile stages remain uncredentialed and signing/finalize stay isolated"
 (cd "${ROOT_DIR}/tools/cosmos_executor" && dart test test/workflow_test.dart)
 if grep -q 'COSMOS_BUILD_REPOSITORY_TOKEN\|COSMOS_BUILD_CREDENTIAL\|id-token' "${ROOT_DIR}/scripts/build-android" "${ROOT_DIR}/scripts/build-ios"; then

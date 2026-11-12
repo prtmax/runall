@@ -106,21 +106,29 @@ fi
 jarsigner -verify "$OUTPUT"
 
 if [[ -n "$expected_version_name" || -n "$expected_version_code" ]]; then
-  require_cmd bundletool
-  manifest="$(bundletool dump manifest --bundle="$OUTPUT")"
-  if [[ -n "$expected_version_name" ]]; then
-    vname="$(echo "$manifest" | sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' | head -1)"
-    if [[ "$vname" != "$expected_version_name" ]]; then
-      log "AAB versionName mismatch: got ${vname:-empty} expected $expected_version_name"
+  if command -v bundletool >/dev/null 2>&1; then
+    manifest="$(bundletool dump manifest --bundle="$OUTPUT")"
+    if [[ -n "$expected_version_name" ]]; then
+      vname="$(echo "$manifest" | sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' | head -1)"
+      if [[ "$vname" != "$expected_version_name" ]]; then
+        log "AAB versionName mismatch: got ${vname:-empty} expected $expected_version_name"
+        exit 1
+      fi
+    fi
+    if [[ -n "$expected_version_code" ]]; then
+      vcode="$(echo "$manifest" | sed -n 's/.*android:versionCode="\([^"]*\)".*/\1/p' | head -1)"
+      if [[ "$vcode" != "$expected_version_code" ]]; then
+        log "AAB versionCode mismatch: got ${vcode:-empty} expected $expected_version_code"
+        exit 1
+      fi
+    fi
+  else
+    require_cmd unzip
+    if ! unzip -p "$OUTPUT" base/manifest/AndroidManifest.xml > "$tmpdir/AndroidManifest.xml"; then
+      log "AAB is missing base/manifest/AndroidManifest.xml"
       exit 1
     fi
-  fi
-  if [[ -n "$expected_version_code" ]]; then
-    vcode="$(echo "$manifest" | sed -n 's/.*android:versionCode="\([^"]*\)".*/\1/p' | head -1)"
-    if [[ "$vcode" != "$expected_version_code" ]]; then
-      log "AAB versionCode mismatch: got ${vcode:-empty} expected $expected_version_code"
-      exit 1
-    fi
+    run_dart_tool aab-manifest "$tmpdir/AndroidManifest.xml" "$package_name" "$expected_version_name" "$expected_version_code"
   fi
 fi
 
