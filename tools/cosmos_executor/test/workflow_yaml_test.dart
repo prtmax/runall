@@ -101,4 +101,58 @@ void main() {
       temp.deleteSync(recursive: true);
     }
   });
+  test('caller fans out bounded independent platform matrices with shared sources', () {
+    final root = Directory.current.parent.parent.path;
+    final workflow = loadYaml(
+      File('$root/.github/workflows/android-build.yml').readAsStringSync(),
+    ) as YamlMap;
+    expect(
+      workflow['on']['workflow_dispatch']['inputs']['build_run_ids']['required'],
+      false,
+    );
+    final jobs = workflow['jobs'] as YamlMap;
+    for (final platform in ['android', 'ios']) {
+      for (final stage in ['build', 'sign', 'finalize']) {
+        final job = jobs['$stage-$platform'];
+        expect(job['strategy']['fail-fast'], false);
+        expect(job['strategy']['max-parallel'], platform == 'android' ? 4 : 2);
+        expect(
+          job['strategy']['matrix']['item'],
+          contains('fromJson(needs.prepare.outputs.' + platform + '_matrix)'),
+        );
+        expect(job['if'], contains('!cancelled()'));
+        expect(job['if'], isNot(contains('needs.sign-')));
+        if (stage != 'build') {
+          expect(
+            job['with']['build_run_id'],
+            r'${{ matrix.item.build_run_id }}',
+          );
+          expect(
+            job['uses'],
+            endsWith('@cdea94792a52f4bcfe1bd04fda3d3de27176cd5b'),
+          );
+        } else {
+          final steps = job['steps'] as YamlList;
+          expect(
+            steps
+                .where(
+                  (dynamic step) => (step['uses'] as String? ?? '').startsWith(
+                    'actions/cache@',
+                  ),
+                )
+                .length,
+            greaterThanOrEqualTo(2),
+          );
+          expect(
+            steps.any(
+              (dynamic step) =>
+                  step['with']?['name'] ==
+                  r'source-workspace-${{ matrix.item.source_sha }}',
+            ),
+            true,
+          );
+        }
+      }
+    }
+  });
 }
