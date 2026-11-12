@@ -66,7 +66,8 @@ install_fvm() {
     bash "${RUNALL_FVM_INSTALL_SCRIPT}" >&2
   else
     require_cmd curl
-    curl -fsSL https://fvm.app/install.sh -o "$installer"
+    curl "${PLATFORM_CURL_ARGS[@]}" --max-time 300 --retry-max-time 600 \
+      -fsSL https://fvm.app/install.sh -o "$installer"
     bash "$installer" >&2
   fi
   rm -f "$installer"

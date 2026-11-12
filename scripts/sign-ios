@@ -86,10 +86,10 @@ require_cmd codesign
 require_cmd zip
 require_cmd dart
 
-curl --fail-with-body -sS \
+curl "${PLATFORM_CURL_ARGS[@]}" --fail -sS \
   -H "Authorization: Bearer ${COSMOS_BUILD_CREDENTIAL}" \
   "${COSMOS_BUILD_SIGN_MATERIAL_URL%/}/build-runs/${BUILD_RUN_ID}/ios-signing" \
-  > "$tmpdir/material.json"
+  --output "$tmpdir/material.json"
 
 p12_b64="$(jq -r '.certificateP12Base64 // empty' "$tmpdir/material.json")"
 password="$(jq -r '.certificatePassword // empty' "$tmpdir/material.json")"
