@@ -1,0 +1,9 @@
+name: Upload prepared build inputs
+description: Upload per-run frozen inputs and shared source archives
+inputs:
+  manifest:
+    description: Path to the prepared artifact manifest
+    required: true
+runs:
+  using: node24
+  main: upload.cjs

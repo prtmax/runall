@@ -12,7 +12,7 @@ function files(root) {
 }
 
 async function main() {
-  const manifest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+  const manifest = JSON.parse(fs.readFileSync(process.env.INPUT_MANIFEST || process.argv[2], 'utf8'));
   const { DefaultArtifactClient } = await import('@actions/artifact');
   const client = new DefaultArtifactClient();
   for (const item of manifest) {
