@@ -42,6 +42,117 @@ void main() {
         invoke(['profile', profile.path, 'com.example.app', 'TEAM']).exitCode,
         isNot(0),
       );
+      void writeProfileWithAppId(String appId) => profile.writeAsStringSync(
+        encodePlist({
+          'TeamIdentifier': <dynamic>['TEAM'],
+          'Entitlements': {'application-identifier': appId},
+          'ExpirationDate': DateTime.now().toUtc().add(const Duration(days: 1)),
+          'Name': 'Distribution',
+        }),
+      );
+      writeProfileWithAppId('TEAM.*');
+      expect(
+        invoke(['profile', profile.path, 'com.example.app', 'TEAM']).exitCode,
+        0,
+      );
+      writeProfileWithAppId('TEAM.com.example.*');
+      expect(
+        invoke(['profile', profile.path, 'com.example.app', 'TEAM']).exitCode,
+        0,
+      );
+      expect(
+        invoke(['profile', profile.path, 'com.other.app', 'TEAM']).exitCode,
+        isNot(0),
+      );
+      final xmlManifest = File('${temp.path}/AndroidManifest.xml')
+        ..writeAsStringSync(
+          '<manifest xmlns:android="http://schemas.android.com/apk/res/android" '
+          'package="com.example.app" android:versionCode="3" android:versionName="1.0.0"/>',
+        );
+      expect(
+        invoke([
+          'aab-manifest',
+          xmlManifest.path,
+          'com.example.app',
+          '1.0.0',
+          '3',
+        ]).exitCode,
+        0,
+      );
+      expect(
+        invoke([
+          'aab-manifest',
+          xmlManifest.path,
+          'com.example.app',
+          '1.0.0',
+          '4',
+        ]).exitCode,
+        isNot(0),
+      );
+      List<int> pbFieldBytes(int field, List<int> data) => [
+        (field << 3) | 2,
+        data.length,
+        ...data,
+      ];
+      List<int> pbFieldVarint(int field, int value) {
+        final out = <int>[(field << 3) | 0];
+        var v = value;
+        while (v >= 0x80) {
+          out.add((v & 0x7F) | 0x80);
+          v >>= 7;
+        }
+        out.add(v);
+        return out;
+      }
+      List<int> pbAttr(
+        String name, {
+        String value = '',
+        int resourceId = 0,
+        List<int>? compiledItem,
+      }) => [
+        ...pbFieldBytes(2, name.codeUnits),
+        if (value.isNotEmpty) ...pbFieldBytes(3, value.codeUnits),
+        if (resourceId != 0) ...pbFieldVarint(5, resourceId),
+        if (compiledItem != null) ...pbFieldBytes(6, compiledItem),
+      ];
+      final protoElement = <int>[
+        ...pbFieldBytes(3, 'manifest'.codeUnits),
+        ...pbFieldBytes(4, pbAttr('package', value: 'com.example.app')),
+        ...pbFieldBytes(
+          4,
+          pbAttr('versionName', value: '1.0.0', resourceId: 0x0101021c),
+        ),
+        ...pbFieldBytes(
+          4,
+          pbAttr(
+            'versionCode',
+            resourceId: 0x0101021b,
+            compiledItem: pbFieldBytes(7, pbFieldVarint(6, 3)),
+          ),
+        ),
+      ];
+      final protoManifest = File('${temp.path}/AndroidManifest.pb')
+        ..writeAsBytesSync(pbFieldBytes(1, protoElement));
+      expect(
+        invoke([
+          'aab-manifest',
+          protoManifest.path,
+          'com.example.app',
+          '1.0.0',
+          '3',
+        ]).exitCode,
+        0,
+      );
+      expect(
+        invoke([
+          'aab-manifest',
+          protoManifest.path,
+          'com.wrong.app',
+          '1.0.0',
+          '3',
+        ]).exitCode,
+        isNot(0),
+      );
       final info = File('${temp.path}/Info.plist')
         ..writeAsStringSync(
           encodePlist({

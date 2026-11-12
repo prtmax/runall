@@ -56,7 +56,7 @@ install_fvm() {
   if command -v fvm >/dev/null 2>&1; then
     return 0
   fi
-  export PATH="${PATH}:${HOME}/.pub-cache/bin:${HOME}/fvm/bin:${HOME}/.local/bin"
+  export PATH="${PATH}:${HOME}/.pub-cache/bin:${HOME}/fvm/bin:${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin"
   if command -v fvm >/dev/null 2>&1; then
     return 0
   fi
@@ -70,7 +70,7 @@ install_fvm() {
     bash "$installer" >&2
   fi
   rm -f "$installer"
-  export PATH="${PATH}:${HOME}/.pub-cache/bin:${HOME}/fvm/bin:${HOME}/.local/bin"
+  export PATH="${PATH}:${HOME}/.pub-cache/bin:${HOME}/fvm/bin:${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin"
   command -v fvm >/dev/null 2>&1 || {
     log "fvm install did not produce a usable fvm command"
     exit 1
