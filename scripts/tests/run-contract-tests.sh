@@ -284,14 +284,14 @@ grep -qx 'COSMOS_BUILD_RESOLVED_BASE_URL=https://mercury-stg.iprtapp.com/api/v1/
 
 (
   export COSMOS_BUILD_AUTH_EXCHANGE_URL="https://mercury-stg.iprtapp.com/api/v1/runtime/internal/build-auth/exchange"
-  export COSMOS_BUILD_SPEC_URL="https://mercury-stg.iprtapp.com/api/v1/runtime/internal"
+  export COSMOS_BUILD_SPEC_URL="https://mercury-stg.iprtapp.com/api/v1/runtime/internal/build-runs"
   export COSMOS_BUILD_CALLBACK_URL="https://mercury-stg.iprtapp.com/api/v1/runtime/internal"
   export COSMOS_BUILD_SIGN_MATERIAL_URL="https://mercury-stg.iprtapp.com/api/v1/runtime/internal"
   export COSMOS_BUILD_ARTIFACT_UPLOAD_URL="https://mercury-stg.iprtapp.com/api/v1/runtime/internal"
   export COSMOS_BUILD_RESOLVED_BASE_URL="https://p8018.birch.iprtapp.com/api/v1/runtime/internal/"
   source "${ROOT_DIR}/scripts/lib/common.sh"
   [[ "${COSMOS_BUILD_AUTH_EXCHANGE_URL}" == "https://p8018.birch.iprtapp.com/api/v1/runtime/internal/build-auth/exchange" ]]
-  [[ "${COSMOS_BUILD_SPEC_URL}" == "https://p8018.birch.iprtapp.com/api/v1/runtime/internal" ]]
+  [[ "${COSMOS_BUILD_SPEC_URL}" == "https://p8018.birch.iprtapp.com/api/v1/runtime/internal/build-runs" ]]
   [[ "${COSMOS_BUILD_CALLBACK_URL}" == "https://p8018.birch.iprtapp.com/api/v1/runtime/internal" ]]
   [[ "${COSMOS_BUILD_SIGN_MATERIAL_URL}" == "https://p8018.birch.iprtapp.com/api/v1/runtime/internal" ]]
   [[ "${COSMOS_BUILD_ARTIFACT_UPLOAD_URL}" == "https://p8018.birch.iprtapp.com/api/v1/runtime/internal" ]]

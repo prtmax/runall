@@ -310,7 +310,7 @@ apply_resolved_cosmos_base_url() {
   if [[ -n "${COSMOS_BUILD_RESOLVED_BASE_URL:-}" ]]; then
     local base="${COSMOS_BUILD_RESOLVED_BASE_URL%/}"
     export COSMOS_BUILD_AUTH_EXCHANGE_URL="${base}/build-auth/exchange"
-    export COSMOS_BUILD_SPEC_URL="${base}"
+    export COSMOS_BUILD_SPEC_URL="${base}/build-runs"
     export COSMOS_BUILD_CALLBACK_URL="${base}"
     export COSMOS_BUILD_SIGN_MATERIAL_URL="${base}"
     export COSMOS_BUILD_ARTIFACT_UPLOAD_URL="${base}"
