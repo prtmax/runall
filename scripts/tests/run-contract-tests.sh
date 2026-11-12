@@ -417,13 +417,23 @@ MOCK
 cat > "$work/sign-bin/apksigner" <<'MOCK'
 #!/usr/bin/env bash
 if [[ "$1" == "sign" ]]; then
+  out_file=""
+  key_pass_arg=""
   while [[ $# -gt 0 ]]; do
     if [[ "$1" == "--out" ]]; then
-      printf "signed-apk" > "$2"
-      exit 0
+      out_file="$2"
+    elif [[ "$1" == "--key-pass" ]]; then
+      key_pass_arg="$2"
     fi
     shift
   done
+  if [[ -n "${MOCK_REQUIRE_KEY_PASS:-}" && "$key_pass_arg" != "${MOCK_REQUIRE_KEY_PASS}" ]]; then
+    exit 2
+  fi
+  if [[ -n "$out_file" ]]; then
+    printf "signed-apk" > "$out_file"
+    exit 0
+  fi
   exit 1
 fi
 if [[ "$1" == "verify" && "$2" == "--print-certs" ]]; then
@@ -445,8 +455,10 @@ for cert_line in \
     COSMOS_BUILD_CALLBACK_URL=https://api.example.test/internal \
     COSMOS_BUILD_CREDENTIAL=sign-token \
     BUILD_RUN_ID=900 \
+    MOCK_REQUIRE_KEY_PASS="pass:pass" \
     ANDROID_KEYSTORE_PATH="$work/dummy.jks" \
     ANDROID_KEYSTORE_PASSWORD="pass" \
+    ANDROID_KEY_PASSWORD="wrong-distinct-key-pass" \
     ANDROID_KEY_ALIAS="upload" \
     "${ROOT_DIR}/scripts/sign-android" \
       --spec "$work/spec.json" \
