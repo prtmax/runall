@@ -11,12 +11,13 @@ openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=Synthetic-Test -days 1 \
 openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=Test-CA -days 1 \
   -keyout "$work/ca.key" -out "$work/ca.pem" 2>/dev/null
 expected="$(openssl x509 -in "$work/original.pem" -fingerprint -sha256 -noout)"
-for format in modern legacy; do
+for format in modern legacy modern-no-chain legacy-no-chain; do
   mkdir "$work/$format"
-  args=()
-  [[ "$format" != legacy ]] || args=(-legacy)
-  openssl pkcs12 -export "${args[@]}" -in "$work/original.pem" -inkey "$work/original.key" \
-    -certfile "$work/ca.pem" -passout pass:fixture-password -out "$work/$format/cert.p12"
+  set -- -export -in "$work/original.pem" -inkey "$work/original.key" \
+    -passout pass:fixture-password -out "$work/$format/cert.p12"
+  [[ "$format" != legacy* ]] || set -- "$@" -legacy
+  [[ "$format" == *no-chain ]] || set -- "$@" -certfile "$work/ca.pem"
+  openssl pkcs12 "$@"
   prepare_ios_pkcs12 "$work/$format" fixture-password
   openssl pkcs12 -in "$work/$format/import.p12" -passin pass:fixture-password \
     -info -nodes -out "$work/$format/roundtrip.pem" 2>"$work/$format/algorithms"
@@ -25,7 +26,9 @@ for format in modern legacy; do
   openssl pkey -in "$work/original.key" -pubout > "$work/expected.pub"
   openssl pkey -in "$work/$format/roundtrip.pem" -pubout > "$work/actual.pub"
   cmp "$work/expected.pub" "$work/actual.pub"
-  [[ "$(grep -c 'BEGIN CERTIFICATE' "$work/$format/roundtrip.pem")" == 2 ]]
+  count=2
+  [[ "$format" != *no-chain ]] || count=1
+  [[ "$(grep -c 'BEGIN CERTIFICATE' "$work/$format/roundtrip.pem")" == "$count" ]]
 done
 if prepare_ios_pkcs12 "$work/modern" wrong-password >/dev/null 2>&1; then
   log 'wrong PKCS#12 password accepted'; exit 1
