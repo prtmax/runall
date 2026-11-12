@@ -105,13 +105,26 @@ require_cmd apksigner
 aligned="$tmpdir/aligned.apk"
 zipalign -f -p 4 "$INPUT" "$aligned"
 
-apksigner sign \
+if ! apksigner sign \
   --ks "$keystore" \
   --ks-pass "pass:${ks_pass}" \
   --ks-key-alias "$alias_name" \
   --key-pass "pass:${key_pass}" \
   --out "$OUTPUT" \
-  "$aligned"
+  "$aligned"; then
+  if [[ "$key_pass" != "$ks_pass" ]]; then
+    log "apksigner failed with distinct keyPassword; retrying with keystorePassword (PKCS12)"
+    apksigner sign \
+      --ks "$keystore" \
+      --ks-pass "pass:${ks_pass}" \
+      --ks-key-alias "$alias_name" \
+      --key-pass "pass:${ks_pass}" \
+      --out "$OUTPUT" \
+      "$aligned"
+  else
+    exit 1
+  fi
+fi
 
 apksigner verify --verbose "$OUTPUT"
 

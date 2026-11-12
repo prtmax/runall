@@ -62,6 +62,7 @@ keystore="$tmpdir/keystore.jks"
 if [[ -n "${ANDROID_KEYSTORE_PATH:-}" ]]; then
   cp "${ANDROID_KEYSTORE_PATH}" "$keystore"
   ks_pass="${ANDROID_KEYSTORE_PASSWORD:-}"
+  key_pass="${ANDROID_KEY_PASSWORD:-$ks_pass}"
   alias_name="${ANDROID_KEY_ALIAS:-}"
 else
   assert_non_empty "COSMOS_BUILD_SIGN_MATERIAL_URL" "${COSMOS_BUILD_SIGN_MATERIAL_URL:-}"
@@ -74,6 +75,7 @@ else
     > "$tmpdir/material.json"
   base64 -d <<< "$(jq -r '.keystoreBase64' "$tmpdir/material.json")" > "$keystore"
   ks_pass="$(jq -r '.keystorePassword' "$tmpdir/material.json")"
+  key_pass="$(jq -r '.keyPassword // .keystorePassword' "$tmpdir/material.json")"
   alias_name="$(jq -r '.keyAlias' "$tmpdir/material.json")"
   if [[ -z "$EXPECTED_FINGERPRINT" ]]; then
     EXPECTED_FINGERPRINT="$(jq -r '.certificateSha256 // empty' "$tmpdir/material.json")"
@@ -87,9 +89,19 @@ EXPECTED_FINGERPRINT="$(normalize_sha256 "$EXPECTED_FINGERPRINT")"
 
 require_cmd jarsigner
 cp "$INPUT" "$OUTPUT"
-jarsigner -sigalg SHA256withRSA -digestalg SHA-256 \
-  -keystore "$keystore" -storepass "$ks_pass" \
-  "$OUTPUT" "$alias_name"
+if ! jarsigner -sigalg SHA256withRSA -digestalg SHA-256 \
+  -keystore "$keystore" -storepass "$ks_pass" -keypass "$key_pass" \
+  "$OUTPUT" "$alias_name"; then
+  if [[ "$key_pass" != "$ks_pass" ]]; then
+    log "jarsigner failed with distinct keyPassword; retrying with keystorePassword (PKCS12)"
+    cp "$INPUT" "$OUTPUT"
+    jarsigner -sigalg SHA256withRSA -digestalg SHA-256 \
+      -keystore "$keystore" -storepass "$ks_pass" -keypass "$ks_pass" \
+      "$OUTPUT" "$alias_name"
+  else
+    exit 1
+  fi
+fi
 
 jarsigner -verify "$OUTPUT"
 
