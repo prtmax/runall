@@ -56,6 +56,10 @@ fi
 
 gen_dir="${APP_DIR}/.runall/native-build"
 generate_frozen_release "$gen_dir"
+pbxproj="${APP_DIR}/ios/Runner.xcodeproj/project.pbxproj"
+if [[ -f "$pbxproj" ]]; then
+  perl -0777 -pi -e 's/PRODUCT_BUNDLE_IDENTIFIER = \$\(IOS_BUNDLE_ID\);/PRODUCT_BUNDLE_IDENTIFIER = "\$(IOS_BUNDLE_ID)";/g' "$pbxproj"
+fi
 bundle_id="$FROZEN_BUNDLE_ID"
 display_name="$FROZEN_DISPLAY_NAME"
 version_name="$FROZEN_VERSION_NAME"
