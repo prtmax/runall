@@ -34,4 +34,71 @@ void main() {
       expect(checkouts, 7);
     },
   );
+  test(
+    'prepare emits per-platform matrices and finalizers isolate item failure',
+    () {
+      final root = Directory.current.parent.parent.path;
+      final prepare = loadYaml(
+        File('$root/.github/workflows/reusable-prepare.yml').readAsStringSync(),
+      ) as YamlMap;
+      final call = prepare['on']['workflow_call'];
+      expect(call['inputs']['build_run_ids']['required'], false);
+      expect(
+        (call['outputs'] as YamlMap).keys,
+        containsAll(['has_android', 'has_ios', 'android_matrix', 'ios_matrix']),
+      );
+      for (final platform in ['android', 'ios']) {
+        final sign = loadYaml(
+          File('$root/.github/workflows/reusable-sign-$platform.yml')
+              .readAsStringSync(),
+        ) as YamlMap;
+        final steps = sign['jobs']['sign-$platform']['steps'] as YamlList;
+        final exchange = steps.indexWhere(
+          (dynamic step) =>
+              (step['name'] as String? ?? '').startsWith('Exchange OIDC'),
+        );
+        final unsigned = steps.indexWhere(
+          (dynamic step) =>
+              step['with']?['name'] == r'unsigned-${{ inputs.build_run_id }}',
+        );
+        expect(exchange, lessThan(unsigned));
+        expect(steps[unsigned]['continue-on-error'], isNull);
+        final finalize = File(
+          '$root/.github/workflows/reusable-finalize-$platform.yml',
+        ).readAsStringSync();
+        expect(finalize, contains("if: steps.signed.outcome == 'success'"));
+        expect(finalize, contains('./scripts/verify-artifact-set'));
+        expect(
+          finalize,
+          isNot(contains("inputs.upstream_result == 'success'")),
+        );
+      }
+    },
+  );
+
+  test('finalize requires every requested signed artifact', () async {
+    final root = Directory.current.parent.parent.path;
+    final temp = Directory.systemTemp.createTempSync('signed-check');
+    try {
+      final spec = File('${temp.path}/spec.json')
+        ..writeAsStringSync('{"targets":["apk","aab"]}');
+      final signed = Directory('${temp.path}/signed')..createSync();
+      Future<int> verify() async => (await Process.run('bash', [
+        '$root/scripts/verify-artifact-set',
+        spec.path,
+        signed.path,
+      ])).exitCode;
+      expect(await verify(), isNot(0));
+      File('${signed.path}/app.apk').writeAsStringSync('apk');
+      expect(await verify(), isNot(0));
+      File('${signed.path}/app.aab').writeAsStringSync('aab');
+      expect(await verify(), 0);
+      File('${signed.path}/second.apk').writeAsStringSync('ambiguous');
+      expect(await verify(), isNot(0));
+      spec.writeAsStringSync('{"targets":[]}');
+      expect(await verify(), isNot(0));
+    } finally {
+      temp.deleteSync(recursive: true);
+    }
+  });
 }

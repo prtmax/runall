@@ -1,0 +1,7 @@
+{
+  "name": "runall-artifact-upload",
+  "private": true,
+  "dependencies": {
+    "@actions/artifact": "6.3.1"
+  }
+}

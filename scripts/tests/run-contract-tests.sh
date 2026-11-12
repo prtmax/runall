@@ -504,7 +504,7 @@ printf '<manifest xmlns:android="http://schemas.android.com/apk/res/android" pac
 MOCK_KEYTOOL_CERT_HEX="$cert_hex"   PATH="$work/sign-bin:$mock_bin:$PATH"   COSMOS_BUILD_CALLBACK_URL=https://api.example.test/internal   COSMOS_BUILD_CREDENTIAL=sign-token   BUILD_RUN_ID=900   ANDROID_KEYSTORE_PATH="$work/dummy.jks"   ANDROID_KEYSTORE_PASSWORD="pass"   ANDROID_KEY_PASSWORD="pass"   ANDROID_KEY_ALIAS="upload"   "${ROOT_DIR}/scripts/sign-aab"     --spec "$work/spec.json"     --input "$work/unsigned.aab"     --output "$work/signed.aab"     --expected-fingerprint "$cert_hex"
 
 log "contract: compile stages remain uncredentialed and signing/finalize stay isolated"
-(cd "${ROOT_DIR}/tools/cosmos_executor" && dart test test/workflow_test.dart)
+(cd "${ROOT_DIR}/tools/cosmos_executor" && dart test test/workflow_test.dart test/chunk_prepare_test.dart test/workflow_yaml_test.dart)
 if grep -q 'COSMOS_BUILD_REPOSITORY_TOKEN\|COSMOS_BUILD_CREDENTIAL\|id-token' "${ROOT_DIR}/scripts/build-android" "${ROOT_DIR}/scripts/build-ios"; then
   log "compile script references a privileged credential"
   exit 1

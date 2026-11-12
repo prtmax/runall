@@ -17,11 +17,15 @@ EOF
 
 SPEC=""
 WORKSPACE=""
+RESOLVE_ONLY=0
+RESOLVED_SHA=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --spec) SPEC="$2"; shift 2 ;;
     --workspace) WORKSPACE="$2"; shift 2 ;;
+    --resolve-only) RESOLVE_ONLY=1; shift ;;
+    --resolved-sha) RESOLVED_SHA="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) log "unknown argument: $1"; usage; exit 1 ;;
   esac
@@ -56,21 +60,29 @@ if [[ ! -d "${WORKSPACE}/.git" ]]; then
 fi
 
 git -C "$WORKSPACE" remote set-url origin "$origin_url"
-if [[ "$source_ref" == "latest" ]]; then
+checkout_revision() {
+  local revision="$1"
+  git -C "$WORKSPACE" rev-parse "${revision}^{commit}" > "$WORKSPACE/.git/runall-resolved-sha"
+  if [[ "$RESOLVE_ONLY" == 0 ]]; then git_with_auth -C "$WORKSPACE" checkout --detach "$revision"; fi
+}
+if [[ -n "$RESOLVED_SHA" ]]; then
+  [[ "$RESOLVED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+  checkout_revision "$RESOLVED_SHA"
+elif [[ "$source_ref" == "latest" ]]; then
   if ! git_with_auth -C "$WORKSPACE" fetch --tags --force origin; then
     log "trusted Orion tags fetch failed"
     exit 1
   fi
   resolved_tag="$(git -C "$WORKSPACE" tag --list --sort=-version:refname | head -n 1)"
   if [[ -n "$resolved_tag" ]]; then
-    git_with_auth -C "$WORKSPACE" checkout --detach "$resolved_tag"
+    checkout_revision "$resolved_tag"
   else
     if ! git_with_auth -C "$WORKSPACE" fetch origin \
       refs/heads/main:refs/remotes/origin/main; then
       log "trusted Orion main fetch failed"
       exit 1
     fi
-    git_with_auth -C "$WORKSPACE" checkout --detach refs/remotes/origin/main
+    checkout_revision refs/remotes/origin/main
   fi
 elif [[ "$source_ref" == "main" ]]; then
   if ! git_with_auth -C "$WORKSPACE" fetch origin \
@@ -78,19 +90,20 @@ elif [[ "$source_ref" == "main" ]]; then
     log "trusted Orion main fetch failed"
     exit 1
   fi
-  git_with_auth -C "$WORKSPACE" checkout --detach refs/remotes/origin/main
+  checkout_revision refs/remotes/origin/main
 else
   if ! git_with_auth -C "$WORKSPACE" fetch --tags --force origin "$source_ref"; then
     log "trusted Orion ref fetch failed: $source_ref"
     exit 1
   fi
   if git -C "$WORKSPACE" rev-parse --verify "${source_ref}^{commit}" >/dev/null 2>&1; then
-    git_with_auth -C "$WORKSPACE" checkout --detach "$source_ref"
+    checkout_revision "$source_ref"
   else
-    git_with_auth -C "$WORKSPACE" checkout --detach FETCH_HEAD
+    checkout_revision FETCH_HEAD
   fi
 fi
 
+if [[ "$RESOLVE_ONLY" == 1 ]]; then exit 0; fi
 actual_source="$(git -C "$WORKSPACE" rev-parse HEAD)"
 if [[ "$source_ref" =~ ^[0-9a-f]{40}$ && "$actual_source" != "$source_ref" ]]; then
   log "source HEAD mismatch"

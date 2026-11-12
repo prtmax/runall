@@ -1,3 +1,5 @@
 .dart_tool/
 .worktrees/
 coverage/
+
+node_modules/
