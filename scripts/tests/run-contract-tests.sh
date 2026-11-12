@@ -320,7 +320,18 @@ if [[ "$joined" == *" -X PUT "* || "$joined" == *" -X PUT" ]]; then
   printf 'put\n' >> "${MOCK_UPLOAD_LOG:?}"
   exit 0
 fi
+if [[ "$joined" == *"audience=cosmos-build"* ]]; then
+  printf '{"value":"fresh-oidc-token"}\n'
+  exit 0
+fi
+if [[ "$joined" == *"/build-auth/exchange"* ]]; then
+  printf '{"accessToken":"refreshed-finalize-token"}\n'
+  exit 0
+fi
 if [[ "$joined" == *"/complete"* ]]; then
+  if [[ -n "${MOCK_COMPLETE_AUTH_FILE:-}" ]]; then
+    printf '%s\n' "$joined" > "${MOCK_COMPLETE_AUTH_FILE}"
+  fi
   printf '%s\n' "$data" >> "${MOCK_UPLOAD_LOG:?}"
   printf '{}\n'
   exit 0
@@ -351,6 +362,14 @@ MOCK_UPLOAD_LOG="$work/upload.log" MOCK_UPLOAD_REQUEST="$work/upload-request.jso
 jq -e '.target=="apk" and .fileName=="app.apk" and .byteSize>0 and (.sha256|test("^[0-9a-f]{64}$"))' "$work/upload-request.json" >/dev/null
 grep -q '^put$' "$work/upload.log"
 tail -n 1 "$work/upload.log" | jq -e '.status == "authorized" and .target == "apk" and .objectKey == "native/900/apk"' >/dev/null
+MOCK_COMPLETE_AUTH_FILE="$work/complete-auth.txt" MOCK_UPLOAD_LOG="$work/upload-refresh.log" MOCK_UPLOAD_REQUEST="$work/upload-request-refresh.json" MOCK_UPLOAD_ARTIFACT="$work/app.apk" \
+  PATH="$mock_bin:$PATH" COSMOS_BUILD_ARTIFACT_UPLOAD_URL=https://api.example.test/internal \
+  COSMOS_BUILD_AUTH_EXCHANGE_URL=https://api.example.test/internal/build-auth/exchange \
+  ACTIONS_ID_TOKEN_REQUEST_URL="https://token.actions.example.test/oidc?foo=1" \
+  ACTIONS_ID_TOKEN_REQUEST_TOKEN={{SECRET_v555mfb2}} \
+  COSMOS_BUILD_CREDENTIAL=expired-finalize-token BUILD_RUN_ID=900 \
+  "${ROOT_DIR}/scripts/upload-artifacts" --spec "$work/spec.json" --artifact "$work/app.apk" --target apk
+grep -q 'Authorization: Bearer refreshed-finalize-token' "$work/complete-auth.txt"
 if MOCK_UPLOAD_MODE=bad-url MOCK_UPLOAD_LOG="$work/upload.log" MOCK_UPLOAD_REQUEST="$work/upload-request.json" MOCK_UPLOAD_ARTIFACT="$work/app.apk" \
   PATH="$mock_bin:$PATH" COSMOS_BUILD_ARTIFACT_UPLOAD_URL=https://api.example.test/internal \
   COSMOS_BUILD_CREDENTIAL=finalize-token BUILD_RUN_ID=900 \

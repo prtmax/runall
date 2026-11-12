@@ -148,6 +148,13 @@ if [[ "$put_ok" != 1 ]]; then
   exit 1
 fi
 
+if [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" && -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" && -n "${COSMOS_BUILD_AUTH_EXCHANGE_URL:-}" ]]; then
+  if "${ROOT_DIR}/scripts/exchange-build-credential" --stage finalize --run-id "$BUILD_RUN_ID" --out "$workdir/refreshed.cred"; then
+    COSMOS_BUILD_CREDENTIAL="$(tr -d '\r\n' < "$workdir/refreshed.cred")"
+    export COSMOS_BUILD_CREDENTIAL
+  fi
+fi
+
 object_key="$(jq -r '.objectKey' "$workdir/grant.json")"
 grant_status="$(jq -r '.status // "authorized"' "$workdir/grant.json")"
 complete_body="$(jq -cn \
