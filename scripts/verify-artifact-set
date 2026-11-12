@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# A partial matrix item must never become a successful release.
+set -euo pipefail
+spec="$1"
+directory="$2"
+jq -e '.targets | type == "array" and length > 0' "$spec" >/dev/null
+while IFS= read -r target; do
+  case "$target" in apk|aab|ipa) ;; *) exit 1 ;; esac
+  files=("$directory"/*."$target")
+  [[ ${#files[@]} == 1 && -s "${files[0]}" ]] || { echo "missing or ambiguous signed $target" >&2; exit 1; }
+done < <(jq -r '.targets[]' "$spec")

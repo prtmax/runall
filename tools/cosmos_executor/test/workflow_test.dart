@@ -40,8 +40,11 @@ void main() {
         expect(body, contains('contents: read'));
         expect(body, contains('RUNALL_FROZEN_RESOURCE_ROOT'));
       }
-      final prepare = File('$root/.github/workflows/reusable-prepare.yml')
-          .readAsStringSync();
+      final prepare =
+          File('$root/.github/workflows/reusable-prepare.yml')
+              .readAsStringSync() +
+          File('$root/scripts/prepare-chunk').readAsStringSync() +
+          File('$root/scripts/lib/common.sh').readAsStringSync();
       for (final required in [
         'id-token: write',
         'exchange-build-credential',

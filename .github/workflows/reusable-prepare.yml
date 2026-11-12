@@ -6,25 +6,23 @@ on:
       build_run_id:
         required: true
         type: string
+      build_run_ids:
+        required: false
+        type: string
+        default: ''
     outputs:
-      platform:
-        description: Build platform from frozen spec
-        value: ${{ jobs.prepare.outputs.platform }}
-      targets:
-        description: Build targets JSON array
-        value: ${{ jobs.prepare.outputs.targets }}
-      repository:
-        description: Source repository slug
-        value: ${{ jobs.prepare.outputs.repository }}
-      source_commit:
-        description: Pinned source commit
-        value: ${{ jobs.prepare.outputs.source_commit }}
-      orion_commit:
-        description: Pinned Orion commit when present
-        value: ${{ jobs.prepare.outputs.orion_commit }}
-      application_id:
-        description: Android applicationId when present
-        value: ${{ jobs.prepare.outputs.application_id }}
+      has_android:
+        description: Prepared has_android
+        value: ${{ jobs.prepare.outputs.has_android }}
+      has_ios:
+        description: Prepared has_ios
+        value: ${{ jobs.prepare.outputs.has_ios }}
+      android_matrix:
+        description: Prepared android_matrix
+        value: ${{ jobs.prepare.outputs.android_matrix }}
+      ios_matrix:
+        description: Prepared ios_matrix
+        value: ${{ jobs.prepare.outputs.ios_matrix }}
     secrets:
       COSMOS_BUILD_AUTH_EXCHANGE_URL:
         required: true
@@ -44,14 +42,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
-      platform: ${{ steps.meta.outputs.platform }}
-      targets: ${{ steps.meta.outputs.targets }}
-      repository: ${{ steps.meta.outputs.repository }}
-      source_commit: ${{ steps.meta.outputs.source_commit }}
-      orion_commit: ${{ steps.meta.outputs.orion_commit }}
-      application_id: ${{ steps.meta.outputs.application_id }}
+      has_android: ${{ steps.meta.outputs.has_android }}
+      has_ios: ${{ steps.meta.outputs.has_ios }}
+      android_matrix: ${{ steps.meta.outputs.android_matrix }}
+      ios_matrix: ${{ steps.meta.outputs.ios_matrix }}
     env:
       BUILD_RUN_ID: ${{ inputs.build_run_id }}
+      BUILD_RUN_IDS: ${{ inputs.build_run_ids }}
       COSMOS_BUILD_AUTH_EXCHANGE_URL: ${{ secrets.COSMOS_BUILD_AUTH_EXCHANGE_URL }}
       COSMOS_BUILD_SPEC_URL: ${{ secrets.COSMOS_BUILD_SPEC_URL }}
       COSMOS_BUILD_CALLBACK_URL: ${{ secrets.COSMOS_BUILD_CALLBACK_URL }}
@@ -68,81 +65,19 @@ jobs:
       - name: Resolve locked executor tools
         run: dart pub get --enforce-lockfile --directory tools/cosmos_executor
 
-      - name: Exchange OIDC for prepare credential
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "$BUILD_RUN_ID"
-          test -n "${COSMOS_BUILD_AUTH_EXCHANGE_URL:-}"
-          ./scripts/exchange-build-credential --run-id "$BUILD_RUN_ID" --output-env "$GITHUB_ENV"
-
-      - name: Load frozen build spec
+      - name: Prepare frozen run inputs and shared source
         id: meta
         shell: bash
-        run: |
-          set -euo pipefail
-          ./scripts/load-build-spec --output build-spec.json --run-id "$BUILD_RUN_ID"
-          echo "platform=$(jq -r .platform build-spec.json)" >> "$GITHUB_OUTPUT"
-          echo "targets=$(jq -c .targets build-spec.json)" >> "$GITHUB_OUTPUT"
-          echo "repository=$(jq -r .buildInput.source.repository build-spec.json)" >> "$GITHUB_OUTPUT"
-          source_ref="$(jq -r '(.buildInput.source.ref // .buildInput.source.commit // "latest") | if . == "" then (.buildInput.source.commit // "latest") else . end | if . == "" then "latest" else . end' build-spec.json)"
-          echo "source_commit=${source_ref}" >> "$GITHUB_OUTPUT"
-          echo "orion_commit=${source_ref}" >> "$GITHUB_OUTPUT"
-          echo "application_id=$(jq -r '.buildInput.app.applicationId // empty' build-spec.json)" >> "$GITHUB_OUTPUT"
+        run: ./scripts/prepare-chunk
 
-      - name: Checkout frozen source tree
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p workspace
-          ./scripts/checkout-source --spec build-spec.json --workspace workspace
-
-      - name: Report running (prepare)
-        shell: bash
-        run: ./scripts/report-result --status running --phase prepare --run-id "$BUILD_RUN_ID"
-
-      - name: Stage frozen brand and language resources
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Prepare credential stays in this job. Compile only receives the staged files.
-          ./scripts/fetch-packaging-resources --spec build-spec.json --output studio-resources --run-id "$BUILD_RUN_ID"
-          index_args=()
-          if [[ -f studio-resources/index.json ]]; then
-            index_args=(--index "${PWD}/studio-resources/index.json")
-          fi
-          ./scripts/stage-frozen-resources --spec build-spec.json --output frozen-resources "${index_args[@]}"
-
-      - name: Upload build spec artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          name: build-spec-${{ inputs.build_run_id }}
-          path: build-spec.json
-          retention-days: 7
-
-      - name: Upload frozen resources
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: frozen-resources-${{ inputs.build_run_id }}
-          path: frozen-resources/
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Pack source workspace
-        shell: bash
-        run: |
-          set -euo pipefail
-          # upload-artifact drops .git; the compile job must still verify HEAD.
-          tar -cf source-workspace.tar -C workspace .
-
-      - name: Upload source workspace artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: source-workspace-${{ inputs.build_run_id }}
-          path: source-workspace.tar
-          retention-days: 1
-
-      - name: Report prepare failure
+          node-version: '24'
+      - name: Install locked artifact client
+        run: npm ci --ignore-scripts --prefix tools/artifact_upload
+      - name: Upload per-run inputs and shared source workspaces
+        run: node tools/artifact_upload/upload.cjs prepared/uploads.json
+      - name: Report preparation upload failure
         if: failure()
         shell: bash
-        run: ./scripts/report-result --status failed --phase prepare --run-id "$BUILD_RUN_ID" --error-message "runall prepare failed" || true
+        run: ./scripts/report-chunk-failure

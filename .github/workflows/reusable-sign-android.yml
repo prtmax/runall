@@ -42,6 +42,12 @@ jobs:
       - name: Resolve locked executor tools
         run: dart pub get --enforce-lockfile --directory tools/cosmos_executor
 
+      - name: Exchange OIDC for sign credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/exchange-build-credential --run-id "$BUILD_RUN_ID" --output-env "$GITHUB_ENV"
+
       - name: Download build spec
         uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
         with:
@@ -53,12 +59,6 @@ jobs:
         with:
           name: unsigned-${{ inputs.build_run_id }}
           path: unsigned
-
-      - name: Exchange OIDC for sign credential
-        shell: bash
-        run: |
-          set -euo pipefail
-          ./scripts/exchange-build-credential --run-id "$BUILD_RUN_ID" --output-env "$GITHUB_ENV"
 
       - name: Report sign phase
         shell: bash

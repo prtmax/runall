@@ -7,8 +7,9 @@ on:
         required: true
         type: string
       upstream_result:
-        required: true
+        required: false
         type: string
+        default: ''
     secrets:
       COSMOS_BUILD_AUTH_EXCHANGE_URL:
         required: true
@@ -42,28 +43,29 @@ jobs:
       - name: Resolve locked executor tools
         run: dart pub get --enforce-lockfile --directory tools/cosmos_executor
 
-      - name: Download build spec
-        if: inputs.upstream_result == 'success'
-        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
-        with:
-          name: build-spec-${{ inputs.build_run_id }}
-          path: spec
-
-      - name: Download signed IPA
-        if: inputs.upstream_result == 'success'
-        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
-        with:
-          name: signed-${{ inputs.build_run_id }}
-          path: signed
-
       - name: Exchange OIDC for finalize credential
         shell: bash
         run: |
           set -euo pipefail
           ./scripts/exchange-build-credential --run-id "$BUILD_RUN_ID" --output-env "$GITHUB_ENV"
 
+      - name: Download build spec
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
+        with:
+          name: build-spec-${{ inputs.build_run_id }}
+          path: spec
+
+      - name: Download signed IPA
+        id: signed
+        continue-on-error: true
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4.1.8
+        with:
+          name: signed-${{ inputs.build_run_id }}
+          path: signed
+
       - name: Upload IPA
-        if: inputs.upstream_result == 'success'
+        id: upload
+        if: steps.signed.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -75,6 +77,7 @@ jobs:
             spec="$(find spec -name build-spec.json -print -quit)"
           fi
           test -n "$spec" && test -f "$spec"
+          ./scripts/verify-artifact-set "$spec" signed
           shopt -s nullglob
           uploaded=0
           for ipa in signed/*.ipa; do
@@ -87,13 +90,14 @@ jobs:
           fi
 
       - name: Report succeeded
-        if: inputs.upstream_result == 'success'
+        if: steps.upload.outcome == 'success'
         shell: bash
         run: ./scripts/report-result --status succeeded --phase finalize --run-id "$BUILD_RUN_ID"
 
       - name: Report failed
-        if: inputs.upstream_result != 'success'
+        if: always() && steps.upload.outcome != 'success'
         shell: bash
         run: |
           set -euo pipefail
           ./scripts/report-result --status failed --phase finalize --run-id "$BUILD_RUN_ID" --error-message "runall ios finalize skipped or upstream failed" || true
+          exit 1

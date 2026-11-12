@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+RUNALL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+IFS=',' read -r -a runs <<< "${BUILD_RUN_IDS:-${BUILD_RUN_ID:?}}"
+for id in "${runs[@]}"; do
+  [[ "$id" =~ ^[1-9][0-9]*$ ]] || exit 1
+  credential_env="$(mktemp)"
+  chmod 600 "$credential_env"
+  if "$RUNALL_ROOT/scripts/exchange-build-credential" --run-id "$id" --output-env "$credential_env"; then
+    (
+      while IFS='=' read -r key value; do
+        case "$key" in COSMOS_BUILD_CREDENTIAL|COSMOS_BUILD_RESOLVED_BASE_URL) export "$key=$value" ;; *) exit 1 ;; esac
+      done < "$credential_env"
+      "$RUNALL_ROOT/scripts/report-result" --status failed --phase prepare --run-id "$id" --error-message "runall preparation or artifact upload failed" || true
+    )
+  fi
+  rm -- "$credential_env"
+done

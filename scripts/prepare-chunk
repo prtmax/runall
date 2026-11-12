@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Each run has its own prepare credential/resources; source checkouts are shared
+# by resolved SHA. No credentials enter the uploaded manifest or source archive.
+set -euo pipefail
+RUNALL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$RUNALL_ROOT/scripts/lib/common.sh"
+output="${RUNALL_PREPARE_OUTPUT:-prepared}"
+primary="${BUILD_RUN_ID:-}"
+ids="${BUILD_RUN_IDS:-$primary}"
+[[ "$primary" =~ ^[1-9][0-9]*$ && "$ids" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] || exit 1
+IFS=',' read -r -a runs <<< "$ids"
+[[ "${runs[0]}" == "$primary" && ${#runs[@]} -le 20 ]] || exit 1
+[[ "$(printf '%s\n' "${runs[@]}" | sort -u | wc -l | tr -d ' ')" == "${#runs[@]}" ]] || exit 1
+mkdir -p "$output"
+output="$(cd "$output" && pwd)"
+printf '[]\n' > "$output/items.json"
+printf '[]\n' > "$output/uploads.json"
+
+prepare_one() (
+  export BUILD_RUN_ID="$1"
+  local_dir="$output/runs/$BUILD_RUN_ID"
+  mkdir -p "$local_dir/spec"
+  credential_env="$(mktemp)"
+  chmod 600 "$credential_env"
+  trap 'rm -- "$credential_env"' EXIT
+  trap '"$RUNALL_ROOT/scripts/report-result" --status failed --phase prepare --run-id "$BUILD_RUN_ID" --error-message "runall prepare failed" || true' ERR
+  "$RUNALL_ROOT/scripts/exchange-build-credential" --run-id "$BUILD_RUN_ID" --output-env "$credential_env"
+  while IFS='=' read -r key value; do
+    case "$key" in COSMOS_BUILD_CREDENTIAL|COSMOS_BUILD_RESOLVED_BASE_URL) export "$key=$value" ;; *) exit 1 ;; esac
+  done < "$credential_env"
+  apply_resolved_cosmos_base_url
+  spec="$local_dir/spec/build-spec.json"
+  "$RUNALL_ROOT/scripts/load-build-spec" --output "$spec" --run-id "$BUILD_RUN_ID"
+  "$RUNALL_ROOT/scripts/report-result" --status running --phase prepare --run-id "$BUILD_RUN_ID"
+  "$RUNALL_ROOT/scripts/fetch-packaging-resources" --spec "$spec" --output "$local_dir/resources" --run-id "$BUILD_RUN_ID"
+  index_args=()
+  if [[ -f "$local_dir/resources/index.json" ]]; then index_args=(--index "$local_dir/resources/index.json"); fi
+  "$RUNALL_ROOT/scripts/stage-frozen-resources" --spec "$spec" --output "$local_dir/frozen" "${index_args[@]}"
+  source_ref="$(read_source_ref "$spec")"
+  ref_key="$(printf '%s' "$source_ref" | sha256sum | cut -d' ' -f1)"
+  if [[ -f "$output/ref-$ref_key" ]]; then
+    source_sha="$(cat "$output/ref-$ref_key")"
+  else
+    "$RUNALL_ROOT/scripts/checkout-source" --spec "$spec" --workspace "$output/resolver" --resolve-only
+    # checkout-source writes the exact resolved ref, including latest/tag semantics.
+    source_sha="$(cat "$output/resolver/.git/runall-resolved-sha")"
+    printf '%s' "$source_sha" > "$output/ref-$ref_key"
+  fi
+  if [[ ! -f "$output/source-$source_sha/source-workspace.tar" ]]; then
+    workspace="$output/workspace-$source_sha"
+    mv "$output/resolver" "$workspace"
+    "$RUNALL_ROOT/scripts/checkout-source" --spec "$spec" --workspace "$workspace" --resolved-sha "$source_sha"
+    mkdir -p "$output/source-$source_sha"
+    tar -cf "$output/source-$source_sha/source-workspace.tar" -C "$workspace" .
+  fi
+  jq --arg id "$BUILD_RUN_ID" --arg sha "$source_sha" \
+    --arg app "$(jq -r .buildInput.app.applicationId "$spec")" --arg platform "$(jq -r .platform "$spec")" \
+    '. + [{build_run_id:$id,application_id:$app,source_sha:$sha,platform:$platform}]' "$output/items.json" > "$output/items.tmp"
+  mv "$output/items.tmp" "$output/items.json"
+  jq --arg id "$BUILD_RUN_ID" --arg root "$local_dir" \
+    '. + [{name:("build-spec-"+$id),root:($root+"/spec"),days:7},{name:("frozen-resources-"+$id),root:($root+"/frozen"),days:1}]' \
+    "$output/uploads.json" > "$output/uploads.tmp"
+  mv "$output/uploads.tmp" "$output/uploads.json"
+)
+
+# Call the child directly (not in an if/|| list): Bash otherwise disables errexit
+# inside the whole function and a failed prepare could be mistaken for success.
+for id in "${runs[@]}"; do
+  set +e
+  (set -eE; prepare_one "$id")
+  status=$?
+  set -e
+  if [[ "$status" -ne 0 ]]; then log "prepare failed for run $id; continuing siblings"; fi
+done
+for source_dir in "$output"/source-*; do
+  [[ -d "$source_dir" ]] || continue
+  sha="${source_dir##*/source-}"
+  jq --arg sha "$sha" --arg root "$source_dir" '. + [{name:("source-workspace-"+$sha),root:$root,days:1}]' "$output/uploads.json" > "$output/uploads.tmp"
+  mv "$output/uploads.tmp" "$output/uploads.json"
+done
+android="$(jq -c '[.[]|select(.platform=="android")|del(.platform)]' "$output/items.json")"
+ios="$(jq -c '[.[]|select(.platform=="ios")|{build_run_id,source_sha}]' "$output/items.json")"
+{
+  echo "android_matrix=$android"
+  echo "ios_matrix=$ios"
+  echo "has_android=$(jq -r 'length>0' <<< "$android")"
+  echo "has_ios=$(jq -r 'length>0' <<< "$ios")"
+} >> "${GITHUB_OUTPUT:?}"
+jq -e 'length>0' "$output/items.json" >/dev/null
