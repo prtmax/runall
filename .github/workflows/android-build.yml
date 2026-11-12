@@ -23,7 +23,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-prepare.yml@cdea94792a52f4bcfe1bd04fda3d3de27176cd5b
+    uses: prtmax/runall/.github/workflows/reusable-prepare.yml@1431b8a61ad30875d5f827a6ab233f617b68ee31
     with:
       build_run_id: ${{ inputs.build_run_id }}
       build_run_ids: ${{ inputs.build_run_ids }}
@@ -141,7 +141,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-sign-android.yml@cdea94792a52f4bcfe1bd04fda3d3de27176cd5b
+    uses: prtmax/runall/.github/workflows/reusable-sign-android.yml@1431b8a61ad30875d5f827a6ab233f617b68ee31
     with:
       build_run_id: ${{ matrix.item.build_run_id }}
       application_id: ${{ matrix.item.application_id }}
@@ -161,7 +161,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-finalize-android.yml@cdea94792a52f4bcfe1bd04fda3d3de27176cd5b
+    uses: prtmax/runall/.github/workflows/reusable-finalize-android.yml@1431b8a61ad30875d5f827a6ab233f617b68ee31
     with:
       build_run_id: ${{ matrix.item.build_run_id }}
     secrets:
@@ -263,7 +263,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-sign-ios.yml@cdea94792a52f4bcfe1bd04fda3d3de27176cd5b
+    uses: prtmax/runall/.github/workflows/reusable-sign-ios.yml@1431b8a61ad30875d5f827a6ab233f617b68ee31
     with:
       build_run_id: ${{ matrix.item.build_run_id }}
     secrets:
@@ -282,7 +282,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: prtmax/runall/.github/workflows/reusable-finalize-ios.yml@cdea94792a52f4bcfe1bd04fda3d3de27176cd5b
+    uses: prtmax/runall/.github/workflows/reusable-finalize-ios.yml@1431b8a61ad30875d5f827a6ab233f617b68ee31
     with:
       build_run_id: ${{ matrix.item.build_run_id }}
     secrets:
