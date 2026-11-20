@@ -117,16 +117,27 @@ fi
 
 resolve_release_app_dir "$WORKSPACE" "$source_ref" "$source_ref" >/dev/null
 verify_lock_digest_if_present "$SPEC" "$WORKSPACE"
-if [[ -n "${COSMOS_BUILD_REPOSITORY_TOKEN:-}" && -f "${WORKSPACE}/pubspec.yaml" ]]; then
+if [[ -n "${COSMOS_BUILD_REPOSITORY_TOKEN:-}" ]]; then
   mkdir -p "${WORKSPACE}/.git/runall-mirrors"
-  while IFS= read -r dep_url; do
-    [[ -n "$dep_url" ]] || continue
-    mirror_dir="${WORKSPACE}/.git/runall-mirrors/$(basename "$dep_url")"
+  dependencies="$(run_dart_tool private-git-dependencies "$WORKSPACE")"
+  while read -r repo_name locked_refs; do
+    [[ -n "$repo_name" ]] || continue
+    dep_url="https://github.com/prtmax/${repo_name}.git"
+    mirror_dir="${WORKSPACE}/.git/runall-mirrors/${repo_name}.git"
     rm -rf "$mirror_dir"
-    if ! git_with_auth clone --bare "$dep_url" "$mirror_dir"; then
+    if ! git_with_auth clone --mirror "$dep_url" "$mirror_dir"; then
       log "failed to mirror private git dependency: $dep_url"
       exit 1
     fi
-  done < <(grep -Eo 'https://github\.com/prtmax/[A-Za-z0-9_.-]+\.git' "${WORKSPACE}/pubspec.yaml" | sort -u || true)
+    [[ -n "$locked_refs" ]] || continue
+    read -r -a revisions <<< "$locked_refs"
+    for sha in "${revisions[@]}"; do
+      if ! git -C "$mirror_dir" cat-file -e "${sha}^{commit}" 2>/dev/null; then
+        git_with_auth -C "$mirror_dir" fetch --no-tags origin "$sha"
+      fi
+      [[ "$(git -C "$mirror_dir" cat-file -t "$sha")" == commit ]] || exit 1
+      git -C "$mirror_dir" update-ref "refs/runall/locked/$sha" "$sha"
+    done
+  done <<< "$dependencies"
 fi
 log "source checkout ready at $actual_source (ref $source_ref)"
