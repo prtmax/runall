@@ -16,12 +16,17 @@ export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EM
 
 git init -q -b main "$upstream"
 git -C "$upstream" commit -q --allow-empty -m base
-locked="$(git -C "$upstream" rev-parse HEAD)"
+tagged="$(git -C "$upstream" rev-parse HEAD)"
 git -C "$upstream" tag pinned
 git -C "$upstream" commit -q --allow-empty -m latest
 git -C "$upstream" checkout -qb secondary
 git -C "$upstream" commit -q --allow-empty -m secondary
 secondary="$(git -C "$upstream" rev-parse HEAD)"
+git -C "$upstream" checkout -qb dropped
+git -C "$upstream" commit -q --allow-empty -m 'locked before force-push'
+locked="$(git -C "$upstream" rev-parse HEAD)"
+git -C "$upstream" checkout -q main
+git -C "$upstream" branch -D dropped >/dev/null
 base=https://github.com/prtmax
 repos=(image_mirror overrides_only lock_only)
 for repo in "${repos[@]}"; do
@@ -33,8 +38,8 @@ git -C "$workspace" remote add origin "$base/orion.git"
 member="$workspace/packages/core/utils"
 mkdir -p "$member" "$workspace/tools/rigel_build/bin"
 touch "$workspace/tools/rigel_build/bin/assemble.dart"
-printf 'name: root\nworkspace: [packages/core/utils]\n' > "$workspace/pubspec.yaml"
-printf 'name: utils\ndependencies:\n  image_mirror:\n    git: %s/image_mirror.git\n' "$base" > "$member/pubspec.yaml"
+printf 'name: root\nhomepage: https://github.com/prtmax/metadata_only\n# https://github.com/prtmax/comment_only.git\nworkspace: [packages/core/utils]\n' > "$workspace/pubspec.yaml"
+printf 'name: utils\ndependencies:\n  image_mirror:\n    git:\n      url: %s/image_mirror.git\n' "$base" > "$member/pubspec.yaml"
 printf 'dependency_overrides:\n  fix:\n    git: %s/overrides_only\n' "$base" > "$member/pubspec_overrides.yaml"
 cat > "$workspace/pubspec.lock" <<LOCK
 packages:
@@ -45,17 +50,36 @@ packages:
     source: git
   lock_only:
     description:
+      resolved-ref: "$locked"
       url: "$base/lock_only.git"
     source: git
+  hosted:
+    description: {url: "$base/hosted_only"}
+    source: hosted
 LOCK
 for dir in "$workspace/.git" "$member/build" "$workspace/.dart_tool"; do
   mkdir -p "$dir"
-  printf 'git: %s/ignored.git\n' "$base" > "$dir/pubspec.yaml"
+  printf 'dependencies: {ignored: {git: %s/ignored.git}}\n' "$base" > "$dir/pubspec.yaml"
 done
 git -C "$workspace" add .
 git -C "$workspace" commit -qm source
-COSMOS_BUILD_REPOSITORY_TOKEN=test-only-token "$RUNALL_ROOT/scripts/checkout-source" \
-  --spec "$spec" --workspace "$workspace" --resolved-sha "$(git -C "$workspace" rev-parse HEAD)"
+checkout_workspace() {
+  COSMOS_BUILD_REPOSITORY_TOKEN=test-only-token "$RUNALL_ROOT/scripts/checkout-source" \
+    --spec "$spec" --workspace "$workspace" --resolved-sha "$(git -C "$workspace" rev-parse HEAD)"
+}
+checkout_workspace
+
+# An unavailable locked revision must fail prepare before the workspace is published.
+good_head="$(git -C "$workspace" rev-parse HEAD)"
+sed "s/$locked/0000000000000000000000000000000000000001/g" "$workspace/pubspec.lock" > "$scratch/bad.lock"
+cp "$scratch/bad.lock" "$workspace/pubspec.lock"
+git -C "$workspace" commit -qam 'unavailable lockfile commit'
+if checkout_workspace > "$scratch/failed-prepare.log" 2>&1; then
+  echo 'prepare accepted an unavailable locked revision' >&2
+  exit 1
+fi
+git -C "$workspace" checkout -q --detach "$good_head"
+checkout_workspace
 
 # Compile gets an extracted workspace at a different path and a fresh Git config.
 mkdir "$scratch/compile"
@@ -80,7 +104,10 @@ for repo in "${repos[@]}"; do
     dest="$scratch/$repo$suffix"
     git clone -q --mirror "$base/$repo$suffix" "$dest"
     [[ "$(git -C "$dest" rev-parse refs/heads/secondary)" == "$secondary" ]]
-    [[ "$(git -C "$dest" rev-parse refs/tags/pinned)" == "$locked" ]]
-    git -C "$dest" cat-file -e "$locked^{commit}"
+    [[ "$(git -C "$dest" rev-parse refs/tags/pinned)" == "$tagged" ]]
+    if [[ "$repo" != overrides_only ]]; then
+      [[ "$(git -C "$dest" rev-parse "refs/runall/locked/$locked")" == "$locked" ]]
+      git -C "$dest" cat-file -e "$locked^{commit}"
+    fi
   done
 done

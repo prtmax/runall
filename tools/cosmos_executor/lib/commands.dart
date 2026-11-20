@@ -4,12 +4,17 @@ import 'dart:math';
 import 'aab_manifest.dart';
 import 'core.dart';
 import 'resources.dart';
+import 'private_git_dependencies.dart';
 import 'plist.dart';
 
 void runCommand(List<String> args) {
   if (args.isEmpty) fail('executor command is required');
   final a = args.skip(1).toList();
   switch (args.first) {
+    case 'private-git-dependencies':
+      for (final row in privateGitDependencies(Directory(a.single))) {
+        stdout.writeln(row);
+      }
     case 'needs-studio':
       stdout.writeln(
         requiredResources(readJson(a[0]) as Map<String, dynamic>).keys

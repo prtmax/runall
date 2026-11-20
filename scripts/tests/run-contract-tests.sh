@@ -93,7 +93,7 @@ if BUILD_SPEC_FILE="$work/untrusted.json" "${ROOT_DIR}/scripts/load-build-spec" 
 fi
 log "contract: checkout supports source.ref (latest, main, tag, and commit fallback) without mandatory lockDigest"
 mkdir -p "$work/git-bin"
-printf 'locked\n' > "$work/mock-lock"
+printf 'packages: {}\n' > "$work/mock-lock"
 cat > "$work/git-bin/git" <<'MOCKGIT'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${MOCK_GIT_LOG:?}"
@@ -114,7 +114,7 @@ if [[ "$1" == "-C" ]]; then
       mkdir -p "$root/tools/rigel_build/bin" "$root/apps/rigel"
       printf 'assembler\n' > "$root/tools/rigel_build/bin/assemble.dart"
       cp "${MOCK_LOCK:?}" "$root/pubspec.lock"
-      printf 'url: https://github.com/prtmax/psdk.git\n' > "$root/pubspec.yaml"
+      printf 'dependencies:\n  psdk:\n    git: https://github.com/prtmax/psdk.git\n' > "$root/pubspec.yaml"
       exit 0
       ;;
     "rev-parse HEAD") printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'; exit 0 ;;
