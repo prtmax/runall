@@ -99,7 +99,7 @@ cat > "$work/git-bin/git" <<'MOCKGIT'
 printf '%s\n' "$*" >> "${MOCK_GIT_LOG:?}"
 if [[ "$1" == "-c" ]]; then shift 2; fi
 if [[ "$1" == "init" ]]; then mkdir -p "$2/.git"; exit 0; fi
-if [[ "$1" == "clone" && "$2" == "--bare" ]]; then mkdir -p "$4"; exit 0; fi
+if [[ "$1" == "clone" && "$2" == "--mirror" ]]; then mkdir -p "$4"; exit 0; fi
 if [[ "$1" == "-C" ]]; then
   root="$2"; shift 2
   case "$1 $2" in
@@ -134,7 +134,7 @@ MOCK_LATEST_TAG="v1.4.2" MOCK_LOCK="$work/mock-lock" MOCK_GIT_LOG="$work/git.log
   --spec "$work/ref-latest-spec.json" --workspace "$work/latest-tag-source"
 grep -q 'fetch --tags --force origin' "$work/git.log"
 grep -q 'checkout --detach v1.4.2' "$work/git.log"
-grep -q "clone --bare https://github.com/prtmax/psdk.git $work/latest-tag-source/.git/runall-mirrors/psdk.git" "$work/git.log"
+grep -q "clone --mirror https://github.com/prtmax/psdk.git $work/latest-tag-source/.git/runall-mirrors/psdk.git" "$work/git.log"
 [[ -d "$work/latest-tag-source/.git/runall-mirrors/psdk.git" ]]
 if grep -q 'secret-token@' "$work/git.log"; then
   log "repository token was embedded in the remote URL"
@@ -156,6 +156,8 @@ bind_spec_digests "$work/ref-main-raw.json" "$work/ref-main-spec.json"
 MOCK_LOCK="$work/mock-lock" MOCK_GIT_LOG="$work/git.log" PATH="$work/git-bin:$PATH" \
   "${ROOT_DIR}/scripts/checkout-source" --spec "$work/ref-main-spec.json" --workspace "$work/main-source"
 grep -q 'checkout --detach refs/remotes/origin/main' "$work/git.log"
+
+"${ROOT_DIR}/scripts/tests/private-git-mirrors.sh" "$work/ref-main-spec.json"
 
 jq '.buildInput.source.ref="v1.0.0" | del(.buildInput.source.commit) | del(.buildInput.source.lockDigest)' "$work/spec.json" > "$work/ref-tag-raw.json"
 bind_spec_digests "$work/ref-tag-raw.json" "$work/ref-tag-spec.json"

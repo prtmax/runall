@@ -117,16 +117,23 @@ fi
 
 resolve_release_app_dir "$WORKSPACE" "$source_ref" "$source_ref" >/dev/null
 verify_lock_digest_if_present "$SPEC" "$WORKSPACE"
-if [[ -n "${COSMOS_BUILD_REPOSITORY_TOKEN:-}" && -f "${WORKSPACE}/pubspec.yaml" ]]; then
+if [[ -n "${COSMOS_BUILD_REPOSITORY_TOKEN:-}" ]]; then
   mkdir -p "${WORKSPACE}/.git/runall-mirrors"
+  # Strip the optional suffix before sorting so both spellings share one mirror.
+  dep_urls="$(find "$WORKSPACE" -type d \( -name .git -o -name .dart_tool -o -name build \) -prune -o \
+    -type f \( -name pubspec.yaml -o -name pubspec_overrides.yaml -o -name pubspec.lock \) \
+    -exec sh -c 'grep -hEo "https://github\.com/prtmax/[A-Za-z0-9_.-]+" "$@" || [ "$?" -eq 1 ]' sh {} + \
+    | sed 's/\.git$//' | LC_ALL=C sort -u)"
   while IFS= read -r dep_url; do
     [[ -n "$dep_url" ]] || continue
-    mirror_dir="${WORKSPACE}/.git/runall-mirrors/$(basename "$dep_url")"
+    repo_name="${dep_url##*/}"
+    [[ -n "$repo_name" ]] || exit 1
+    mirror_dir="${WORKSPACE}/.git/runall-mirrors/${repo_name}.git"
     rm -rf "$mirror_dir"
-    if ! git_with_auth clone --bare "$dep_url" "$mirror_dir"; then
+    if ! git_with_auth clone --mirror "${dep_url}.git" "$mirror_dir"; then
       log "failed to mirror private git dependency: $dep_url"
       exit 1
     fi
-  done < <(grep -Eo 'https://github\.com/prtmax/[A-Za-z0-9_.-]+\.git' "${WORKSPACE}/pubspec.yaml" | sort -u || true)
+  done <<< "$dep_urls"
 fi
 log "source checkout ready at $actual_source (ref $source_ref)"
